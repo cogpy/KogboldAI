@@ -73,6 +73,15 @@ import gensettings
 from utils import debounce
 import utils
 import koboldai_settings
+
+# OpenCog Integration
+try:
+    from opencog_integration import initialize_integration, get_integration, KoboldIntegrationConfig
+    OPENCOG_AVAILABLE = True
+    logger.info("OpenCog integration available")
+except ImportError as e:
+    OPENCOG_AVAILABLE = False
+    logger.warning(f"OpenCog integration not available: {e}")
 import torch
 try:
     import intel_extension_for_pytorch as ipex
@@ -663,6 +672,30 @@ koboldai_vars = koboldai_settings.koboldai_vars(socketio)
 koboldai_settings.koboldai_vars_main = koboldai_vars
 utils.koboldai_vars = koboldai_vars
 utils.socketio = socketio
+
+# Initialize OpenCog Integration if available
+if OPENCOG_AVAILABLE:
+    try:
+        opencog_config = KoboldIntegrationConfig(
+            enabled=True,
+            auto_start_orchestration=True,
+            default_agent_count=3,
+            world_auto_generation=True,
+            integration_mode="collaborative"
+        )
+        
+        opencog_success = initialize_integration(koboldai_vars, opencog_config)
+        if opencog_success:
+            logger.info("OpenCog autonomous agent orchestrator initialized successfully")
+            koboldai_vars.opencog_integration = get_integration()
+        else:
+            logger.error("Failed to initialize OpenCog integration")
+            koboldai_vars.opencog_integration = None
+    except Exception as e:
+        logger.error(f"Error initializing OpenCog integration: {e}")
+        koboldai_vars.opencog_integration = None
+else:
+    koboldai_vars.opencog_integration = None
 
 # Weird import position to steal koboldai_vars from utils
 from modeling.patches import patch_transformers
@@ -10768,6 +10801,251 @@ def put_config_sampler_seed(body: SamplerSeedSettingSchema):
         torch.manual_seed(body.value)
     koboldai_vars.seed = body.value
     return {}
+
+
+# OpenCog Integration API Endpoints
+@api_v1.get("/opencog/status")
+@api_schema_wrap
+def get_opencog_status():
+    """---
+    get:
+      summary: Get OpenCog integration status
+      tags:
+        - opencog
+      description: |-2
+        Returns the current status of the OpenCog autonomous agent orchestrator integration.
+      responses:
+        200:
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                    description: Whether OpenCog integration is available
+                  active:
+                    type: boolean
+                    description: Whether OpenCog integration is currently active
+                  status:
+                    type: object
+                    description: Detailed status information
+    """
+    if not OPENCOG_AVAILABLE or koboldai_vars.opencog_integration is None:
+        return {
+            "available": False,
+            "active": False,
+            "status": {"error": "OpenCog integration not available or not initialized"}
+        }
+    
+    try:
+        status = koboldai_vars.opencog_integration.get_integration_status()
+        return {
+            "available": True,
+            "active": status.get('integration_active', False),
+            "status": status
+        }
+    except Exception as e:
+        return {
+            "available": True,
+            "active": False,
+            "status": {"error": str(e)}
+        }
+
+
+@api_v1.post("/opencog/process_input")
+@api_schema_wrap
+def post_opencog_process_input():
+    """---
+    post:
+      summary: Process input through OpenCog cognitive architecture
+      tags:
+        - opencog
+      description: |-2
+        Process user input through the OpenCog autonomous agent orchestrator for enhanced story generation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                input:
+                  type: string
+                  description: The input text to process
+              required:
+                - input
+      responses:
+        200:
+          description: Successful processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  result:
+                    type: object
+                    description: Processing results from cognitive architecture
+        400:
+          description: Bad request
+        503:
+          description: OpenCog integration not available
+    """
+    if not OPENCOG_AVAILABLE or koboldai_vars.opencog_integration is None:
+        abort(Response(json.dumps({"error": "OpenCog integration not available"}), 
+                      mimetype="application/json", status=503))
+    
+    try:
+        body = request.get_json()
+        if not body or 'input' not in body:
+            abort(Response(json.dumps({"error": "Missing 'input' in request body"}), 
+                          mimetype="application/json", status=400))
+        
+        result = koboldai_vars.opencog_integration.process_user_input(body['input'])
+        return {"success": True, "result": result}
+        
+    except Exception as e:
+        logger.error(f"Error processing OpenCog input: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_v1.get("/opencog/world_state")
+@api_schema_wrap
+def get_opencog_world_state():
+    """---
+    get:
+      summary: Get current world state from OpenCog world builder
+      tags:
+        - opencog
+      description: |-2
+        Returns the current state of the world managed by the OpenCog world builder.
+      responses:
+        200:
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  world_state:
+                    type: object
+                    description: Current world state information
+        503:
+          description: OpenCog integration not available
+    """
+    if not OPENCOG_AVAILABLE or koboldai_vars.opencog_integration is None:
+        abort(Response(json.dumps({"error": "OpenCog integration not available"}), 
+                      mimetype="application/json", status=503))
+    
+    try:
+        world_state = koboldai_vars.opencog_integration.world_builder.get_world_state()
+        return {"success": True, "world_state": world_state}
+        
+    except Exception as e:
+        logger.error(f"Error getting OpenCog world state: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_v1.get("/opencog/narrative_coherence")
+@api_schema_wrap
+def get_opencog_narrative_coherence():
+    """---
+    get:
+      summary: Analyze narrative coherence using OpenCog narrative engine
+      tags:
+        - opencog
+      description: |-2
+        Returns analysis of narrative coherence from the OpenCog narrative engine.
+      responses:
+        200:
+          description: Successful request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  coherence_analysis:
+                    type: object
+                    description: Narrative coherence analysis
+        503:
+          description: OpenCog integration not available
+    """
+    if not OPENCOG_AVAILABLE or koboldai_vars.opencog_integration is None:
+        abort(Response(json.dumps({"error": "OpenCog integration not available"}), 
+                      mimetype="application/json", status=503))
+    
+    try:
+        coherence = koboldai_vars.opencog_integration.narrative_engine.analyze_narrative_coherence()
+        return {"success": True, "coherence_analysis": coherence}
+        
+    except Exception as e:
+        logger.error(f"Error analyzing narrative coherence: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@api_v1.post("/opencog/generate_suggestions")
+@api_schema_wrap
+def post_opencog_generate_suggestions():
+    """---
+    post:
+      summary: Generate story suggestions using OpenCog adventure telos
+      tags:
+        - opencog
+      description: |-2
+        Generate adventure and story suggestions using the OpenCog adventure telos system.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context:
+                  type: object
+                  description: Context for suggestion generation
+              required:
+                - context
+      responses:
+        200:
+          description: Successful generation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  suggestions:
+                    type: array
+                    description: Generated story suggestions
+        400:
+          description: Bad request
+        503:
+          description: OpenCog integration not available
+    """
+    if not OPENCOG_AVAILABLE or koboldai_vars.opencog_integration is None:
+        abort(Response(json.dumps({"error": "OpenCog integration not available"}), 
+                      mimetype="application/json", status=503))
+    
+    try:
+        body = request.get_json()
+        if not body or 'context' not in body:
+            abort(Response(json.dumps({"error": "Missing 'context' in request body"}), 
+                          mimetype="application/json", status=400))
+        
+        suggestions = koboldai_vars.opencog_integration.adventure_telos.generate_adventure_suggestions(body['context'])
+        return {"success": True, "suggestions": suggestions}
+        
+    except Exception as e:
+        logger.error(f"Error generating OpenCog suggestions: {e}")
+        return {"success": False, "error": str(e)}
 
 config_endpoint_schemas: List[Type[KoboldSchema]] = []
 
