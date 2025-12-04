@@ -93,6 +93,11 @@ class AtomSpace:
     - Pattern matching and queries
     - Attention allocation and importance tracking
     - Link navigation and relationship traversal
+    - Serialization to JSON (save_to_file)
+    
+    Note: Deserialization from JSON (load_from_file) is not yet implemented.
+    For persistent storage, use save_to_file for backups only, or consider
+    implementing a proper database backend.
     """
     
     def __init__(self):
