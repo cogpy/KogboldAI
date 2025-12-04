@@ -290,9 +290,8 @@ class AtomSpace:
         """
         Load AtomSpace from JSON file.
         
-        Note: This is a simplified implementation that loads atom data but does not
-        fully reconstruct complex atom types and relationships. For production use,
-        consider implementing full serialization/deserialization or using a proper
+        Note: Full deserialization is not yet implemented. This method will raise
+        NotImplementedError. For persistent storage, consider implementing a proper
         persistence backend.
         
         Args:
@@ -300,10 +299,14 @@ class AtomSpace:
             
         Raises:
             NotImplementedError: Full deserialization is not yet implemented
+            
+        TODO: Implement full deserialization by:
+        1. Reading atom data from JSON
+        2. Reconstructing ConceptNode, PredicateNode objects with proper types
+        3. Reconstructing Link objects with proper outgoing sets
+        4. Rebuilding all indexes (temporal, category, pattern)
+        5. Restoring atom relationships and associations
         """
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-        logger.warning(f"Loaded AtomSpace data from {filepath} - full deserialization not yet implemented")
         raise NotImplementedError(
             "Full AtomSpace deserialization is not yet implemented. "
             "Use save_to_file for backup only. For persistent storage, "
