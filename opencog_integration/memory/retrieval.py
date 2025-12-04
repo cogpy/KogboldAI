@@ -9,6 +9,7 @@ Implements intelligent memory retrieval based on:
 - Context relevance
 """
 
+import re
 import math
 import time
 import logging
@@ -324,7 +325,6 @@ class MemoryRetriever:
     
     def _tokenize(self, text: str) -> List[str]:
         """Simple tokenization by splitting on whitespace and punctuation."""
-        import re
         # Remove punctuation and split
         text = re.sub(r'[^\w\s]', ' ', text)
         return [word for word in text.split() if len(word) > 2]
