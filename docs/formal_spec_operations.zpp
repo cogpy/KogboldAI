@@ -1,0 +1,847 @@
+/*******************************************************************************
+ * KoboldAI Operations Formal Specification (Z++)
+ * 
+ * This specification defines the formal operations (state transitions) for
+ * the KoboldAI system, including model loading, text generation, session
+ * management, and OpenCog agent orchestration.
+ *
+ * Version: 1.0.0
+ * Date: 2025-12-04
+ * Based on: KoboldAI v1.19.2
+ ******************************************************************************/
+
+/* Import system state and data model definitions */
+/* Assume all types from previous specifications are available */
+
+/******************************************************************************
+ * SECTION 1: Model Loading Operations
+ ******************************************************************************/
+
+/*
+ * Load Model
+ * 
+ * Loads an AI model into memory, initializing the model state.
+ * Corresponds to model loading in aiserver.py
+ */
+┌─ LoadModel ─────────────────────────────────────────────────────────
+│ ΔSystemState
+│ config? : ModelConfig
+│ success! : BOOL
+│ error_message! : STRING
+│ 
+│ /* Preconditions */
+│ ¬model_state.is_loaded  /* No model currently loaded */
+│ config?.model_name ≠ ""
+│ 
+│ /* Success case */
+│ success! = true ⇒
+│   model_state'.is_loaded = true ∧
+│   model_state'.config = config? ∧
+│   model_state'.load_time = current_time ∧
+│   model_state'.vocab_size > 0 ∧
+│   model_state'.max_sequence_length > 0 ∧
+│   model_state'.total_generations = 0
+│ 
+│ /* Failure case */
+│ success! = false ⇒
+│   model_state' = model_state ∧
+│   error_message! ≠ ""
+│ 
+│ /* Other state unchanged */
+│ session_manager' = session_manager
+│ websocket' = websocket
+│ active_generations' = active_generations
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Unload Model
+ * 
+ * Unloads the current model from memory, freeing resources.
+ */
+┌─ UnloadModel ───────────────────────────────────────────────────────
+│ ΔSystemState
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ model_state.is_loaded
+│ # active_generations = 0  /* No active generations */
+│ 
+│ /* Effect */
+│ success! = true
+│ model_state'.is_loaded = false
+│ model_state'.gpu_memory_allocated = 0
+│ model_state'.ram_memory_allocated = 0
+│ model_state'.active_gpu_devices = ∅
+│ 
+│ /* Other state unchanged */
+│ session_manager' = session_manager
+│ websocket' = websocket
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Apply Soft Prompt
+ * 
+ * Loads and applies a soft prompt to modify model behavior.
+ */
+┌─ ApplySoftPrompt ───────────────────────────────────────────────────
+│ ΔSystemState
+│ prompt? : SoftPrompt
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ model_state.is_loaded
+│ model_state.config.capabilities.embedding_manipulation = true
+│ 
+│ /* Check compatibility */
+│ let compatible == 
+│   model_state.config.model_name ∈ ran prompt?.model_compatibility
+│ 
+│ /* Success case */
+│ success! = compatible ∧
+│   softprompt'.active_prompt = prompt? ∧
+│   softprompt'.is_enabled = true ∧
+│   softprompt'.is_compatible = true
+│ 
+│ /* Failure case */
+│ ¬success! ⇒ softprompt' = softprompt
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 2: Session Management Operations
+ ******************************************************************************/
+
+/*
+ * Create Session
+ * 
+ * Creates a new user session with default configuration.
+ */
+┌─ CreateSession ─────────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id! : SESSION_ID
+│ 
+│ /* Generate unique session ID */
+│ session_id! ∉ dom session_manager.sessions
+│ 
+│ /* Create new session */
+│ let new_session == 
+│   (| session_id := session_id!,
+│      created_at := current_time,
+│      last_activity := current_time,
+│      is_active := true,
+│      story := empty_story,
+│      model_config := model_state.config,
+│      generation_params := default_params,
+│      socket_connected := false
+│   |)
+│ 
+│ /* Update session manager */
+│ session_manager'.sessions = 
+│   session_manager.sessions ∪ { session_id! ↦ new_session }
+│ session_manager'.active_session_count = 
+│   session_manager.active_session_count + 1
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ websocket' = websocket
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Close Session
+ * 
+ * Terminates a user session, cleaning up resources.
+ */
+┌─ CloseSession ──────────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom session_manager.sessions
+│ ¬∃ g : active_generations • g.session_id = session_id?
+│ 
+│ /* Remove session */
+│ session_manager'.sessions = 
+│   session_manager.sessions ∖ { session_id? }
+│ session_manager'.active_session_count = 
+│   session_manager.active_session_count - 1
+│ 
+│ /* Remove WebSocket connection if exists */
+│ websocket'.active_connections = 
+│   websocket.active_connections ∖ { session_id? }
+│ 
+│ /* Remove messages from queue for this session */
+│ websocket'.message_queue = 
+│   ⟨ m : websocket.message_queue | m.1 ≠ session_id? ⟩
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ active_generations' = active_generations
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Connect WebSocket
+ * 
+ * Establishes a WebSocket connection for a session.
+ */
+┌─ ConnectWebSocket ──────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom session_manager.sessions
+│ session_manager.sessions(session_id?).is_active = true
+│ 
+│ /* Establish connection */
+│ websocket'.active_connections = 
+│   websocket.active_connections ∪ { session_id? ↦ true }
+│ websocket'.total_connections = 
+│   websocket.total_connections + 1
+│ 
+│ /* Update session */
+│ session_manager'.sessions(session_id?).socket_connected = true
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ active_generations' = active_generations
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 3: Story Management Operations
+ ******************************************************************************/
+
+/*
+ * Load Story
+ * 
+ * Loads a story from file into a session.
+ */
+┌─ LoadStory ─────────────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ story_path? : PATH
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom session_manager.sessions
+│ story_path? ≠ ""
+│ 
+│ /* Load story from file (external operation) */
+│ let loaded_story : Story
+│ 
+│ /* Success case */
+│ success! = true ⇒
+│   session_manager'.sessions(session_id?).story = loaded_story ∧
+│   session_manager'.sessions(session_id?).last_activity = current_time
+│ 
+│ /* Failure case */
+│ success! = false ⇒
+│   session_manager'.sessions = session_manager.sessions
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ websocket' = websocket
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Save Story
+ * 
+ * Saves the current story to file.
+ */
+┌─ SaveStory ─────────────────────────────────────────────────────────
+│ ΞSystemState
+│ session_id? : SESSION_ID
+│ save_path? : PATH
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom session_manager.sessions
+│ save_path? ≠ ""
+│ 
+│ /* Read-only operation - writes to external storage */
+│ let story_to_save = session_manager.sessions(session_id?).story
+│ 
+│ /* Effect is external file write */
+│ /* success! indicates if write succeeded */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Append Story Chunk
+ * 
+ * Adds a new chunk of text to the story.
+ */
+┌─ AppendStoryChunk ──────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ text? : STRING
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom session_manager.sessions
+│ text? ≠ ""
+│ 
+│ /* Get current story */
+│ let story = session_manager.sessions(session_id?).story
+│ let register = story.story_register
+│ 
+│ /* Create new chunk */
+│ let new_chunk == 
+│   (| chunk_id := register.next_id,
+│      text := text?,
+│      timestamp := current_time
+│   |)
+│ 
+│ /* Append to register */
+│ let new_register == 
+│   (| chunks := register.chunks ^ ⟨new_chunk⟩,
+│      next_id := register.next_id + 1,
+│      id_map := register.id_map ∪ 
+│                { register.next_id ↦ # register.chunks }
+│   |)
+│ 
+│ /* Update story */
+│ session_manager'.sessions(session_id?).story.story_register = 
+│   new_register
+│ session_manager'.sessions(session_id?).last_activity = current_time
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ websocket' = websocket
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 4: Text Generation Operations
+ ******************************************************************************/
+
+/*
+ * Start Generation
+ * 
+ * Initiates a text generation operation for a session.
+ */
+┌─ StartGeneration ───────────────────────────────────────────────────
+│ ΔSystemState
+│ request? : GenerationRequest
+│ session_id? : SESSION_ID
+│ generation_id! : ℕ
+│ 
+│ /* Preconditions */
+│ CanGenerate(session_id?)
+│ request?.params.max_length > 0
+│ 
+│ /* Create generation tracking */
+│ let new_generation == 
+│   (| generation_id := next_generation_id,
+│      session_id := session_id?,
+│      started_at := current_time,
+│      current_tokens := ⟨⟩,
+│      target_length := request?.params.max_length,
+│      can_abort := request?.allowabort,
+│      is_aborted := false,
+│      is_complete := false,
+│      tokens_generated := 0,
+│      elapsed_time := 0.0
+│   |)
+│ 
+│ /* Add to active generations */
+│ active_generations' = active_generations ∪ { new_generation }
+│ generation_id! = next_generation_id
+│ 
+│ /* Update session activity */
+│ session_manager'.sessions(session_id?).last_activity = current_time
+│ 
+│ /* Other state unchanged on start */
+│ model_state' = model_state
+│ websocket' = websocket
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Generate Token
+ * 
+ * Generates a single token as part of an active generation.
+ * This operation is called iteratively during generation.
+ */
+┌─ GenerateToken ─────────────────────────────────────────────────────
+│ ΔSystemState
+│ generation_id? : ℕ
+│ token! : TOKEN_ID
+│ logprob! : ℝ
+│ 
+│ /* Preconditions */
+│ ∃ g : active_generations • g.generation_id = generation_id?
+│ let gen = (μ g : active_generations | 
+│            g.generation_id = generation_id?)
+│ gen.is_complete = false
+│ gen.is_aborted = false
+│ model_state.is_loaded = true
+│ 
+│ /* Model inference (external computation) */
+│ /* token! and logprob! are outputs from model */
+│ 
+│ /* Update generation state */
+│ let updated_gen == 
+│   (| generation_id := gen.generation_id,
+│      session_id := gen.session_id,
+│      started_at := gen.started_at,
+│      current_tokens := gen.current_tokens ^ ⟨token!⟩,
+│      target_length := gen.target_length,
+│      can_abort := gen.can_abort,
+│      is_aborted := false,
+│      is_complete := (# gen.current_tokens + 1 = gen.target_length),
+│      tokens_generated := gen.tokens_generated + 1,
+│      elapsed_time := current_time - gen.started_at
+│   |)
+│ 
+│ /* Replace in active generations */
+│ active_generations' = 
+│   (active_generations ∖ { gen }) ∪ { updated_gen }
+│ 
+│ /* Update model statistics */
+│ model_state'.total_generations = model_state.total_generations + 1
+│ 
+│ /* Send token to client via WebSocket */
+│ let session_id = gen.session_id
+│ websocket'.message_queue = 
+│   websocket.message_queue ^ 
+│   ⟨(session_id, "token", token!)⟩
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Complete Generation
+ * 
+ * Finalizes a generation, applying post-processing and updating story.
+ */
+┌─ CompleteGeneration ────────────────────────────────────────────────
+│ ΔSystemState
+│ generation_id? : ℕ
+│ final_text! : STRING
+│ 
+│ /* Preconditions */
+│ ∃ g : active_generations • g.generation_id = generation_id?
+│ let gen = (μ g : active_generations | 
+│            g.generation_id = generation_id?)
+│ gen.is_complete = true ∨ gen.is_aborted = true
+│ 
+│ /* Decode tokens to text */
+│ /* final_text! is decoded from gen.current_tokens */
+│ 
+│ /* Apply post-processing */
+│ let processed_text = 
+│   if gen.is_aborted then 
+│     final_text!
+│   else
+│     apply_formatting(final_text!, 
+│       session_manager.sessions(gen.session_id).generation_params)
+│ 
+│ /* Append to story if not aborted */
+│ ¬gen.is_aborted ⇒
+│   AppendStoryChunk(gen.session_id, processed_text)
+│ 
+│ /* Remove from active generations */
+│ active_generations' = active_generations ∖ { gen }
+│ 
+│ /* Send completion message via WebSocket */
+│ websocket'.message_queue = 
+│   websocket.message_queue ^ 
+│   ⟨(gen.session_id, "generation_complete", 
+│     (| text := processed_text, 
+│        tokens := gen.tokens_generated,
+│        time := gen.elapsed_time |))⟩
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Abort Generation
+ * 
+ * Stops an ongoing generation before completion.
+ */
+┌─ AbortGeneration ───────────────────────────────────────────────────
+│ ΔSystemState
+│ generation_id? : ℕ
+│ 
+│ /* Preconditions */
+│ ∃ g : active_generations • g.generation_id = generation_id?
+│ let gen = (μ g : active_generations | 
+│            g.generation_id = generation_id?)
+│ gen.can_abort = true
+│ gen.is_complete = false
+│ 
+│ /* Mark as aborted */
+│ let aborted_gen == 
+│   (| generation_id := gen.generation_id,
+│      session_id := gen.session_id,
+│      started_at := gen.started_at,
+│      current_tokens := gen.current_tokens,
+│      target_length := gen.target_length,
+│      can_abort := gen.can_abort,
+│      is_aborted := true,
+│      is_complete := true,
+│      tokens_generated := gen.tokens_generated,
+│      elapsed_time := current_time - gen.started_at
+│   |)
+│ 
+│ /* Update in active generations */
+│ active_generations' = 
+│   (active_generations ∖ { gen }) ∪ { aborted_gen }
+│ 
+│ /* Notify client */
+│ websocket'.message_queue = 
+│   websocket.message_queue ^ 
+│   ⟨(gen.session_id, "generation_aborted", generation_id?)⟩
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 5: OpenCog Agent Operations
+ ******************************************************************************/
+
+/*
+ * Register Agent
+ * 
+ * Registers a new cognitive agent with the orchestrator.
+ */
+┌─ RegisterAgent ─────────────────────────────────────────────────────
+│ ΔSystemState
+│ profile? : AgentProfile
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ opencog.is_initialized = true
+│ profile?.agent_id ∉ dom opencog.orchestrator.agents
+│ profile?.memory_capacity > 0
+│ 
+│ /* Create new agent */
+│ let new_agent == 
+│   (| profile := profile?,
+│      state := idle,
+│      memory := ⟨⟩,
+│      attention_focus := "",
+│      current_goals := ⟨⟩,
+│      cognitive_load := 0.0,
+│      interaction_count := 0,
+│      last_action_time := current_time
+│   |)
+│ 
+│ /* Add to orchestrator */
+│ opencog'.orchestrator.agents = 
+│   opencog.orchestrator.agents ∪ { profile?.agent_id ↦ new_agent }
+│ 
+│ /* Initialize collaboration matrix entries */
+│ ∀ other_id : dom opencog.orchestrator.agents •
+│   opencog'.orchestrator.collaboration_matrix(
+│     (profile?.agent_id, other_id)) = 0.5 ∧
+│   opencog'.orchestrator.collaboration_matrix(
+│     (other_id, profile?.agent_id)) = 0.5
+│ 
+│ success! = true
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Update Agent State
+ * 
+ * Changes the state of a cognitive agent.
+ */
+┌─ UpdateAgentState ──────────────────────────────────────────────────
+│ ΔSystemState
+│ agent_id? : AGENT_ID
+│ new_state? : AgentState
+│ context? : JSON_VALUE
+│ 
+│ /* Preconditions */
+│ agent_id? ∈ dom opencog.orchestrator.agents
+│ 
+│ /* Get current agent */
+│ let agent = opencog.orchestrator.agents(agent_id?)
+│ 
+│ /* Create memory entry for state change */
+│ let memory_entry == 
+│   (| timestamp := current_time,
+│      memory_type := "state_change",
+│      content := (| from := agent.state,
+│                    to := new_state?,
+│                    context := context? |),
+│      importance := 0.7,
+│      decay_rate := 0.1
+│   |)
+│ 
+│ /* Update agent */
+│ opencog'.orchestrator.agents(agent_id?).state = new_state?
+│ opencog'.orchestrator.agents(agent_id?).last_action_time = 
+│   current_time
+│ opencog'.orchestrator.agents(agent_id?).memory = 
+│   agent.memory ^ ⟨memory_entry⟩
+│ 
+│ /* Trim memory if exceeds capacity */
+│ # opencog'.orchestrator.agents(agent_id?).memory > 
+│   agent.profile.memory_capacity ⇒
+│   opencog'.orchestrator.agents(agent_id?).memory = 
+│     tail(opencog'.orchestrator.agents(agent_id?).memory, 
+│          agent.profile.memory_capacity)
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Coordinate Agents
+ * 
+ * Coordinates multiple agents to collaborate on a generation task.
+ */
+┌─ CoordinateAgents ──────────────────────────────────────────────────
+│ ΞSystemState
+│ session_id? : SESSION_ID
+│ task? : STRING
+│ recommendations! : seq (AGENT_ID × STRING × PROBABILITY)
+│ 
+│ /* Preconditions */
+│ OpenCogActive
+│ session_id? ∈ dom session_manager.sessions
+│ 
+│ /* Get relevant agents for task */
+│ let relevant_agents = 
+│   { a : ran opencog.orchestrator.agents | 
+│     task? ∈ ran a.profile.capabilities }
+│ 
+│ /* Evaluate narrative state */
+│ let narrative_state = 
+│   opencog.narrative_engine.coherence_score
+│ 
+│ /* Generate recommendations from each agent */
+│ recommendations! = 
+│   ⟨ (a.profile.agent_id, 
+│      generate_recommendation(a, task?, narrative_state),
+│      calculate_confidence(a, task?))
+│    | a : relevant_agents ⟩
+│ 
+│ /* Read-only operation - no state changes */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Update Narrative State
+ * 
+ * Updates the narrative engine based on new story content.
+ */
+┌─ UpdateNarrativeState ──────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ new_content? : STRING
+│ 
+│ /* Preconditions */
+│ opencog.is_active = true
+│ session_id? ∈ dom session_manager.sessions
+│ 
+│ /* Analyze new content */
+│ let analysis = analyze_narrative_content(new_content?)
+│ 
+│ /* Create narrative element */
+│ let element == 
+│   (| element_type := analysis.type,
+│      content := new_content?,
+│      timestamp := current_time,
+│      coherence_contribution := analysis.coherence
+│   |)
+│ 
+│ /* Add to narrative engine */
+│ opencog'.narrative_engine.narrative_elements = 
+│   opencog.narrative_engine.narrative_elements ^ ⟨element⟩
+│ 
+│ /* Update coherence score (weighted average) */
+│ let total_elements = 
+│   # opencog'.narrative_engine.narrative_elements
+│ opencog'.narrative_engine.coherence_score = 
+│   (opencog.narrative_engine.coherence_score × (total_elements - 1) +
+│    analysis.coherence) / total_elements
+│ 
+│ /* Update character states if mentioned */
+│ ∀ char : analysis.mentioned_characters •
+│   opencog'.narrative_engine.character_states(char) = 
+│     update_character_state(char, new_content?)
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 6: Lua Script Operations
+ ******************************************************************************/
+
+/*
+ * Load Lua Script
+ * 
+ * Loads a Lua userscript into the system.
+ */
+┌─ LoadLuaScript ─────────────────────────────────────────────────────
+│ ΔSystemState
+│ script? : LuaUserscript
+│ success! : BOOL
+│ error_message! : STRING
+│ 
+│ /* Preconditions */
+│ script?.code ≠ ""
+│ script?.script_name ∉ 
+│   { s : ran lua_scripts.loaded_scripts • s.script_name }
+│ 
+│ /* Validate Lua syntax (external check) */
+│ let is_valid = validate_lua_syntax(script?.code)
+│ 
+│ /* Success case */
+│ is_valid = true ⇒
+│   lua_scripts'.loaded_scripts = 
+│     lua_scripts.loaded_scripts ^ ⟨script?⟩ ∧
+│   success! = true
+│ 
+│ /* Failure case */
+│ is_valid = false ⇒
+│   lua_scripts' = lua_scripts ∧
+│   success! = false ∧
+│   error_message! ≠ ""
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Execute Lua Hook
+ * 
+ * Executes Lua scripts registered for a specific hook point.
+ */
+┌─ ExecuteLuaHook ────────────────────────────────────────────────────
+│ ΔSystemState
+│ hook_type? : STRING
+│ input? : JSON_VALUE
+│ output! : JSON_VALUE
+│ 
+│ /* Preconditions */
+│ hook_type? ∈ { "input", "output", "generation", "token" }
+│ 
+│ /* Get scripts for this hook */
+│ let hook_scripts = 
+│   case hook_type? of
+│     "input" → lua_scripts.input_hooks
+│     "output" → lua_scripts.output_hooks
+│     "generation" → lua_scripts.generation_hooks
+│     "token" → lua_scripts.token_hooks
+│ 
+│ /* Execute each script in order */
+│ let result = input?
+│ ∀ script_name : ran hook_scripts •
+│   let script = (μ s : ran lua_scripts.loaded_scripts | 
+│                  s.script_name = script_name)
+│   script.enabled = true ⇒
+│     result := execute_lua(script.code, result)
+│ 
+│ output! = result
+│ 
+│ /* Update statistics */
+│ lua_scripts'.total_executions = 
+│   lua_scripts.total_executions + # hook_scripts
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 7: Composite Operations
+ ******************************************************************************/
+
+/*
+ * Full Generation Pipeline
+ * 
+ * Orchestrates the complete generation process from request to completion.
+ * This is the main operation invoked by the API and UI.
+ */
+┌─ FullGenerationPipeline ────────────────────────────────────────────
+│ ΔSystemState
+│ request? : GenerationRequest
+│ session_id? : SESSION_ID
+│ result! : GenerationResult
+│ 
+│ /* Preconditions */
+│ CanGenerate(session_id?)
+│ 
+│ /* Step 1: Start generation */
+│ ∃ generation_id : ℕ •
+│   StartGeneration(request?, session_id?, generation_id)
+│ 
+│ /* Step 2: OpenCog coordination (if enabled) */
+│ opencog.is_active = true ⇒
+│   ∃ recommendations : seq (AGENT_ID × STRING × PROBABILITY) •
+│     CoordinateAgents(session_id?, "text_generation", 
+│                      recommendations)
+│ 
+│ /* Step 3: Apply input Lua hooks */
+│ ∃ processed_prompt : STRING •
+│   ExecuteLuaHook("input", request?.prompt, processed_prompt)
+│ 
+│ /* Step 4: Iterative token generation */
+│ ∃ tokens : seq TOKEN_ID, logprobs : seq ℝ •
+│   (∀ i : 1 .. request?.params.max_length •
+│      GenerateToken(generation_id, tokens(i), logprobs(i)) ∧
+│      (check_stop_condition(tokens, request?.params.stop_sequence) ⇒
+│       break))
+│ 
+│ /* Step 5: Apply output Lua hooks */
+│ ∃ raw_text, final_text : STRING •
+│   decode_tokens(tokens, raw_text) ∧
+│   ExecuteLuaHook("output", raw_text, final_text)
+│ 
+│ /* Step 6: Complete generation */
+│ CompleteGeneration(generation_id, final_text)
+│ 
+│ /* Step 7: Update OpenCog narrative state */
+│ opencog.is_active = true ⇒
+│   UpdateNarrativeState(session_id?, final_text)
+│ 
+│ /* Return result */
+│ result! = (| results := ⟨(| text := final_text,
+│                             tokens := tokens,
+│                             logprobs := logprobs |)⟩ |)
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Initialize OpenCog Integration
+ * 
+ * Initializes the complete OpenCog cognitive architecture.
+ */
+┌─ InitializeOpenCog ─────────────────────────────────────────────────
+│ ΔSystemState
+│ config? : KoboldIntegrationConfig
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ ¬opencog.is_initialized
+│ config?.enabled = true
+│ 
+│ /* Initialize components */
+│ opencog'.config = config?
+│ opencog'.is_initialized = true
+│ 
+│ /* Create default agents if configured */
+│ config?.default_agent_count > 0 ⇒
+│   ∃ profiles : seq AgentProfile •
+│     # profiles = config?.default_agent_count ∧
+│     (∀ p : ran profiles • RegisterAgent(p, true))
+│ 
+│ /* Initialize narrative engine */
+│ opencog'.narrative_engine.coherence_score = 1.0
+│ opencog'.narrative_engine.coherence_threshold = 
+│   config?.narrative_coherence_threshold
+│ opencog'.narrative_engine.narrative_elements = ⟨⟩
+│ 
+│ /* Initialize world builder */
+│ config?.world_auto_generation = true ⇒
+│   opencog'.world_builder.auto_generation_enabled = true ∧
+│   opencog'.world_builder.generation_depth = 5
+│ 
+│ /* Start orchestration if configured */
+│ config?.auto_start_orchestration = true ⇒
+│   opencog'.is_active = true ∧
+│   opencog'.orchestrator.is_running = true
+│ 
+│ success! = true
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * END OF OPERATIONS SPECIFICATION
+ ******************************************************************************/
