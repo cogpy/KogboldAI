@@ -10,6 +10,7 @@ Implements intelligent memory retrieval based on:
 """
 
 import math
+import time
 import logging
 from typing import List, Dict, Optional, Set, Tuple
 from collections import defaultdict
@@ -287,7 +288,6 @@ class MemoryRetriever:
         
         # Recency component (normalized)
         if 'recency' in weights:
-            import time
             time_since_access = time.time() - memory.last_accessed
             recency_score = math.exp(-time_since_access / 3600)  # Decay over hours
             score += weights['recency'] * recency_score

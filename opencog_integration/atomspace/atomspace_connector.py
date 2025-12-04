@@ -287,13 +287,28 @@ class AtomSpace:
             logger.info(f"Saved AtomSpace with {len(self._atoms)} atoms to {filepath}")
     
     def load_from_file(self, filepath: str):
-        """Load AtomSpace from JSON file."""
-        # Note: This is a simplified version - full implementation would need
-        # to reconstruct atom objects with proper types
+        """
+        Load AtomSpace from JSON file.
+        
+        Note: This is a simplified implementation that loads atom data but does not
+        fully reconstruct complex atom types and relationships. For production use,
+        consider implementing full serialization/deserialization or using a proper
+        persistence backend.
+        
+        Args:
+            filepath: Path to JSON file
+            
+        Raises:
+            NotImplementedError: Full deserialization is not yet implemented
+        """
         with open(filepath, 'r') as f:
             data = json.load(f)
-        logger.info(f"Loaded AtomSpace data from {filepath}")
-        # TODO: Implement full deserialization
+        logger.warning(f"Loaded AtomSpace data from {filepath} - full deserialization not yet implemented")
+        raise NotImplementedError(
+            "Full AtomSpace deserialization is not yet implemented. "
+            "Use save_to_file for backup only. For persistent storage, "
+            "consider implementing a proper persistence backend."
+        )
     
     def _get_atom_id(self, atom: Atom) -> str:
         """Generate a unique ID for an atom."""
