@@ -1,0 +1,650 @@
+/*******************************************************************************
+ * KoboldAI System State Formal Specification (Z++)
+ * 
+ * This specification defines the complete runtime state of the KoboldAI system,
+ * including application state, session management, model state, and OpenCog
+ * cognitive architecture integration.
+ *
+ * Version: 1.0.0
+ * Date: 2025-12-04
+ * Based on: KoboldAI v1.19.2
+ ******************************************************************************/
+
+/* Import data model definitions */
+/* This would import all types from formal_spec_data_model.zpp */
+/* For standalone reading, assume all data model types are available */
+
+/******************************************************************************
+ * SECTION 1: Core Application State
+ ******************************************************************************/
+
+/*
+ * Loaded Model State
+ * 
+ * Runtime state of the currently loaded AI model.
+ * Corresponds to model state in aiserver.py
+ */
+┌─ LoadedModelState ──────────────────────────────────────────────────
+│ config : ModelConfig
+│ is_loaded : BOOL
+│ load_time : TIMESTAMP
+│ 
+│ /* Model runtime information */
+│ tokenizer : STRING            /* Tokenizer identifier */
+│ vocab_size : ℕ
+│ max_sequence_length : ℕ
+│ 
+│ /* Resource allocation */
+│ gpu_memory_allocated : ℕ      /* Bytes allocated on GPU */
+│ ram_memory_allocated : ℕ      /* Bytes allocated in RAM */
+│ active_gpu_devices : ℙ ℕ      /* Set of GPU device IDs in use */
+│ 
+│ /* Performance metrics */
+│ total_generations : ℕ
+│ average_tokens_per_second : ℝ
+│ 
+│ /* Invariants */
+│ is_loaded ⇒ vocab_size > 0
+│ is_loaded ⇒ max_sequence_length > 0
+│ config.use_gpu ⇒ # active_gpu_devices > 0
+│ average_tokens_per_second ≥ 0.0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Active Generation State
+ * 
+ * State of an ongoing text generation operation.
+ */
+┌─ ActiveGeneration ──────────────────────────────────────────────────
+│ generation_id : ℕ
+│ session_id : SESSION_ID
+│ 
+│ /* Generation tracking */
+│ started_at : TIMESTAMP
+│ current_tokens : seq TOKEN_ID
+│ target_length : ℕ
+│ 
+│ /* Control */
+│ can_abort : BOOL
+│ is_aborted : BOOL
+│ is_complete : BOOL
+│ 
+│ /* Progress */
+│ tokens_generated : ℕ
+│ elapsed_time : ℝ              /* Seconds */
+│ 
+│ /* Invariants */
+│ tokens_generated = # current_tokens
+│ tokens_generated ≤ target_length
+│ is_complete ⇒ (tokens_generated = target_length ∨ is_aborted)
+│ is_aborted ⇒ can_abort
+│ elapsed_time ≥ 0.0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Soft Prompt State
+ * 
+ * Currently active soft prompt configuration.
+ */
+┌─ SoftPromptState ───────────────────────────────────────────────────
+│ active_prompt : SoftPrompt
+│ is_enabled : BOOL
+│ 
+│ /* Compatibility check result */
+│ is_compatible : BOOL
+│ compatibility_message : STRING
+│ 
+│ /* Invariants */
+│ is_enabled ⇒ is_compatible
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Lua Script Runtime State
+ * 
+ * State of active Lua userscripts.
+ */
+┌─ LuaScriptState ────────────────────────────────────────────────────
+│ loaded_scripts : seq LuaUserscript
+│ active_scripts : ℙ STRING      /* Set of enabled script names */
+│ 
+│ /* Hook registrations */
+│ input_hooks : seq STRING       /* Scripts registered for input */
+│ output_hooks : seq STRING      /* Scripts registered for output */
+│ generation_hooks : seq STRING  /* Scripts registered for generation */
+│ token_hooks : seq STRING       /* Scripts registered for token */
+│ 
+│ /* Execution statistics */
+│ total_executions : ℕ
+│ failed_executions : ℕ
+│ average_execution_time : ℝ    /* Milliseconds */
+│ 
+│ /* Invariants */
+│ active_scripts ⊆ { s : ran loaded_scripts • s.script_name }
+│ 
+│ /* All hook lists reference valid active scripts */
+│ ran input_hooks ⊆ active_scripts
+│ ran output_hooks ⊆ active_scripts
+│ ran generation_hooks ⊆ active_scripts
+│ ran token_hooks ⊆ active_scripts
+│ 
+│ failed_executions ≤ total_executions
+│ average_execution_time ≥ 0.0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Application Configuration State
+ * 
+ * Global application configuration and settings.
+ * Corresponds to koboldai_vars in aiserver.py
+ */
+┌─ ApplicationConfig ─────────────────────────────────────────────────
+│ /* Network configuration */
+│ host : STRING                  /* Bind address */
+│ port : ℕ                      /* Port number */
+│ use_remote : BOOL             /* Allow remote connections */
+│ 
+│ /* Tunneling */
+│ use_cloudflare : BOOL
+│ use_ngrok : BOOL
+│ use_localtunnel : BOOL
+│ tunnel_url : STRING
+│ 
+│ /* UI settings */
+│ ui_mode : STRING              /* Default: "1" for standard UI */
+│ theme : STRING                /* UI theme name */
+│ 
+│ /* System settings */
+│ quiet : BOOL                  /* Suppress console output */
+│ autosave : BOOL               /* Enable auto-saving */
+│ autosave_frequency : ℕ       /* Minutes between autosaves */
+│ 
+│ /* Hardware preferences */
+│ override_cpu : BOOL           /* Force CPU even if GPU available */
+│ override_gpu : BOOL           /* Force GPU usage */
+│ 
+│ /* Invariants */
+│ port > 0 ∧ port ≤ 65535
+│ ¬(use_cloudflare ∧ use_ngrok ∧ use_localtunnel)  /* Only one tunnel */
+│ ¬(override_cpu ∧ override_gpu)  /* Can't force both */
+│ autosave_frequency > 0
+│ (use_cloudflare ∨ use_ngrok ∨ use_localtunnel) ⇒ tunnel_url ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 2: Session Management State
+ ******************************************************************************/
+
+/*
+ * Session Manager State
+ * 
+ * Manages all active user sessions.
+ */
+┌─ SessionManagerState ───────────────────────────────────────────────
+│ sessions : SESSION_ID ↦ UserSession
+│ active_session_count : ℕ
+│ 
+│ /* Session cleanup */
+│ session_timeout : ℕ           /* Seconds of inactivity before cleanup */
+│ last_cleanup : TIMESTAMP
+│ 
+│ /* Invariants */
+│ active_session_count = # { s : ran sessions | s.is_active }
+│ 
+│ /* All session IDs in map are unique */
+│ ∀ s1, s2 : ran sessions • 
+│   s1.session_id = s2.session_id ⇒ s1 = s2
+│ 
+│ session_timeout > 0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * WebSocket Connection State
+ * 
+ * State of WebSocket connections for real-time communication.
+ */
+┌─ WebSocketState ────────────────────────────────────────────────────
+│ active_connections : SESSION_ID ↦ BOOL  /* Connection status */
+│ message_queue : seq (SESSION_ID × STRING × JSON_VALUE)
+│ 
+│ /* Connection tracking */
+│ total_connections : ℕ
+│ total_disconnections : ℕ
+│ total_messages_sent : ℕ
+│ total_messages_received : ℕ
+│ 
+│ /* Invariants */
+│ /* Only sessions with active connections can be true */
+│ dom active_connections ⊆ dom sessions
+│ 
+│ /* Message queue only contains messages for active connections */
+│ ∀ (sid, cmd, data) : ran message_queue • 
+│   sid ∈ dom active_connections ∧ active_connections(sid) = true
+│ 
+│ total_disconnections ≤ total_connections
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 3: OpenCog Cognitive Architecture State
+ ******************************************************************************/
+
+/*
+ * Agent Orchestrator State
+ * 
+ * State of the autonomous agent orchestration system.
+ * Corresponds to AgentOrchestrator in agent_orchestrator.py
+ */
+┌─ AgentOrchestratorState ────────────────────────────────────────────
+│ agents : AGENT_ID ↦ CognitiveAgent
+│ is_running : BOOL
+│ 
+│ /* Coordination */
+│ collaboration_matrix : (AGENT_ID × AGENT_ID) ↦ PROBABILITY
+│ coordination_rules : seq (STRING × STRING)  /* Rule pairs */
+│ 
+│ /* Event processing */
+│ event_queue : seq (TIMESTAMP × STRING × JSON_VALUE)
+│ events_processed : ℕ
+│ 
+│ /* Session context */
+│ active_orchestration_sessions : ℙ SESSION_ID
+│ 
+│ /* Invariants */
+│ /* Collaboration matrix is symmetric */
+│ ∀ a1, a2 : AGENT_ID | a1 ∈ dom agents ∧ a2 ∈ dom agents •
+│   (a1, a2) ∈ dom collaboration_matrix ⇒
+│   (a2, a1) ∈ dom collaboration_matrix ∧
+│   collaboration_matrix(a1, a2) = collaboration_matrix(a2, a1)
+│ 
+│ /* Event queue is time-ordered */
+│ ∀ i, j : dom event_queue •
+│   i < j ⇒ event_queue(i).1 ≤ event_queue(j).1
+│ 
+│ /* Only valid sessions can have active orchestration */
+│ active_orchestration_sessions ⊆ dom sessions
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Narrative Engine State
+ * 
+ * State of the narrative coherence and generation engine.
+ */
+┌─ NarrativeEngineState ──────────────────────────────────────────────
+│ /* Current narrative context */
+│ active_narrative : STRING
+│ narrative_elements : seq NarrativeElement
+│ 
+│ /* Coherence tracking */
+│ coherence_score : PROBABILITY
+│ coherence_threshold : PROBABILITY
+│ 
+│ /* Plot tracking */
+│ active_plot_threads : ℙ STRING
+│ resolved_plot_threads : ℙ STRING
+│ 
+│ /* Character tracking */
+│ active_characters : ℙ STRING
+│ character_states : STRING ↦ JSON_VALUE
+│ 
+│ /* Invariants */
+│ coherence_threshold ≥ 0.5  /* Minimum acceptable coherence */
+│ 
+│ /* Resolved and active plot threads are disjoint */
+│ active_plot_threads ∩ resolved_plot_threads = ∅
+│ 
+│ /* All tracked characters have states */
+│ active_characters = dom character_states
+│ 
+│ /* NarrativeElement type definition */
+│ NarrativeElement
+│   element_type : STRING     /* scene, dialogue, description, action */
+│   content : STRING
+│   timestamp : TIMESTAMP
+│   coherence_contribution : ℝ
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * World Builder State
+ * 
+ * State of the autonomous world building system.
+ */
+┌─ WorldBuilderState ─────────────────────────────────────────────────
+│ /* World elements */
+│ locations : seq Location
+│ factions : seq Faction
+│ artifacts : seq Artifact
+│ 
+│ /* World metadata */
+│ world_name : STRING
+│ world_type : STRING           /* fantasy, scifi, modern, etc. */
+│ consistency_score : PROBABILITY
+│ 
+│ /* Generation parameters */
+│ auto_generation_enabled : BOOL
+│ generation_depth : ℕ          /* Level of detail */
+│ 
+│ /* Location type definition */
+│ Location
+│   location_id : ℕ
+│   name : STRING
+│   description : STRING
+│   location_type : STRING      /* city, dungeon, wilderness, etc. */
+│   connected_locations : ℙ ℕ  /* IDs of connected locations */
+│   
+│ /* Faction type definition */
+│ Faction
+│   faction_id : ℕ
+│   name : STRING
+│   description : STRING
+│   alignment : ℤ               /* -100 (evil) to 100 (good) */
+│   power_level : ℕ
+│   relationships : ℕ ↦ ℤ      /* Other faction ID -> relationship */
+│   
+│ /* Artifact type definition */
+│ Artifact
+│   artifact_id : ℕ
+│   name : STRING
+│   description : STRING
+│   power_level : ℕ
+│   current_location : ℕ        /* Location ID */
+│ 
+│ /* Invariants */
+│ generation_depth > 0 ∧ generation_depth ≤ 10
+│ 
+│ /* All location IDs are unique */
+│ ∀ l1, l2 : ran locations • 
+│   l1.location_id = l2.location_id ⇒ l1 = l2
+│ 
+│ /* Connected locations must exist */
+│ ∀ l : ran locations • 
+│   l.connected_locations ⊆ { loc : ran locations • loc.location_id }
+│ 
+│ /* Faction alignments are in valid range */
+│ ∀ f : ran factions • 
+│   f.alignment ≥ -100 ∧ f.alignment ≤ 100
+│ 
+│ /* Artifact locations must exist */
+│ ∀ a : ran artifacts • 
+│   a.current_location ∈ { l : ran locations • l.location_id }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Adventure Telos State
+ * 
+ * Goal-directed adventure management system.
+ */
+┌─ AdventureTelosState ───────────────────────────────────────────────
+│ /* Active goals */
+│ active_goals : seq Goal
+│ completed_goals : seq Goal
+│ 
+│ /* Quest management */
+│ active_quests : seq Quest
+│ quest_progress : ℕ ↦ PROBABILITY  /* Quest ID -> completion % */
+│ 
+│ /* Goal type definition */
+│ Goal
+│   goal_id : ℕ
+│   description : STRING
+│   goal_type : STRING          /* exploration, combat, social, puzzle */
+│   priority : STRING           /* high, medium, low */
+│   deadline : TIMESTAMP
+│   prerequisites : ℙ ℕ         /* Goal IDs that must be completed first */
+│   
+│ /* Quest type definition */
+│ Quest
+│   quest_id : ℕ
+│   title : STRING
+│   description : STRING
+│   quest_giver : STRING
+│   reward : STRING
+│   objectives : seq Goal
+│   is_main_quest : BOOL
+│ 
+│ /* Invariants */
+│ /* Goal IDs are unique across active and completed */
+│ { g : ran active_goals • g.goal_id } ∩ 
+│ { g : ran completed_goals • g.goal_id } = ∅
+│ 
+│ /* Quest progress is valid for all active quests */
+│ dom quest_progress = { q : ran active_quests • q.quest_id }
+│ 
+│ /* Prerequisites must reference valid goals */
+│ ∀ g : ran active_goals • 
+│   g.prerequisites ⊆ 
+│   ({ g2 : ran active_goals • g2.goal_id } ∪
+│    { g2 : ran completed_goals • g2.goal_id })
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * OpenCog Integration State
+ * 
+ * Overall state of OpenCog integration with KoboldAI.
+ */
+┌─ OpenCogIntegrationState ───────────────────────────────────────────
+│ config : KoboldIntegrationConfig
+│ is_initialized : BOOL
+│ is_active : BOOL
+│ 
+│ /* Component states */
+│ orchestrator : AgentOrchestratorState
+│ narrative_engine : NarrativeEngineState
+│ world_builder : WorldBuilderState
+│ adventure_telos : AdventureTelosState
+│ 
+│ /* Integration hooks */
+│ generation_hooks_active : BOOL
+│ story_processors_active : BOOL
+│ 
+│ /* Callback registrations */
+│ registered_callbacks : STRING ↦ (seq STRING)  /* Event -> handler names */
+│ 
+│ /* Invariants */
+│ is_active ⇒ is_initialized
+│ is_active ⇒ config.enabled
+│ orchestrator.is_running ⇒ is_active
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 4: Complete System State
+ ******************************************************************************/
+
+/*
+ * KoboldAI System State
+ * 
+ * Complete runtime state of the KoboldAI system, encompassing all subsystems.
+ */
+┌─ SystemState ───────────────────────────────────────────────────────
+│ /* Core application */
+│ app_config : ApplicationConfig
+│ model_state : LoadedModelState
+│ 
+│ /* Session management */
+│ session_manager : SessionManagerState
+│ websocket : WebSocketState
+│ 
+│ /* Generation state */
+│ active_generations : ℙ ActiveGeneration
+│ generation_queue : seq GenerationRequest
+│ 
+│ /* Extensions */
+│ softprompt : SoftPromptState
+│ lua_scripts : LuaScriptState
+│ 
+│ /* OpenCog integration */
+│ opencog : OpenCogIntegrationState
+│ 
+│ /* System metadata */
+│ version : STRING
+│ startup_time : TIMESTAMP
+│ uptime : ℝ                    /* Seconds */
+│ 
+│ /* Performance monitoring */
+│ total_requests : ℕ
+│ total_errors : ℕ
+│ average_response_time : ℝ    /* Seconds */
+│ 
+│ /* Invariants */
+│ version = "1.19.2"
+│ uptime ≥ 0.0
+│ total_errors ≤ total_requests
+│ average_response_time ≥ 0.0
+│ 
+│ /* Active generations must reference valid sessions */
+│ ∀ g : active_generations • 
+│   g.session_id ∈ dom session_manager.sessions
+│ 
+│ /* Generation queue requests must be valid */
+│ ∀ req : ran generation_queue •
+│   req.params.max_length > 0 ∧
+│   req.params.max_context_length > 0
+│ 
+│ /* Model must be loaded for active generations */
+│ # active_generations > 0 ⇒ model_state.is_loaded
+│ 
+│ /* WebSocket connections match sessions */
+│ dom websocket.active_connections ⊆ dom session_manager.sessions
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 5: State Initialization
+ ******************************************************************************/
+
+/*
+ * Initial System State
+ * 
+ * Defines the state of the system immediately after initialization.
+ */
+┌─ InitSystemState ───────────────────────────────────────────────────
+│ SystemState'
+│ 
+│ /* Application config initialized with defaults */
+│ app_config'.host = "0.0.0.0"
+│ app_config'.port = 5000
+│ app_config'.use_remote = false
+│ app_config'.quiet = false
+│ app_config'.autosave = true
+│ app_config'.autosave_frequency = 5
+│ 
+│ /* No model loaded initially */
+│ model_state'.is_loaded = false
+│ model_state'.total_generations = 0
+│ 
+│ /* No active sessions */
+│ session_manager'.sessions = ∅
+│ session_manager'.active_session_count = 0
+│ 
+│ /* No WebSocket connections */
+│ websocket'.active_connections = ∅
+│ websocket'.message_queue = ⟨⟩
+│ websocket'.total_connections = 0
+│ websocket'.total_messages_sent = 0
+│ 
+│ /* No active generations */
+│ active_generations' = ∅
+│ generation_queue' = ⟨⟩
+│ 
+│ /* No soft prompt loaded */
+│ softprompt'.is_enabled = false
+│ 
+│ /* No Lua scripts loaded */
+│ lua_scripts'.loaded_scripts = ⟨⟩
+│ lua_scripts'.active_scripts = ∅
+│ lua_scripts'.total_executions = 0
+│ 
+│ /* OpenCog not initialized */
+│ opencog'.is_initialized = false
+│ opencog'.is_active = false
+│ 
+│ /* System metadata */
+│ startup_time' = current_time
+│ uptime' = 0.0
+│ total_requests' = 0
+│ total_errors' = 0
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 6: State Predicates
+ ******************************************************************************/
+
+/*
+ * System Ready
+ * 
+ * Predicate indicating system is ready to handle requests.
+ */
+┌─ SystemReady ───────────────────────────────────────────────────────
+│ SystemState
+│ 
+│ /* Model must be loaded */
+│ model_state.is_loaded = true
+│ 
+│ /* Must have at least one active session */
+│ session_manager.active_session_count > 0
+│ 
+│ /* No critical errors */
+│ total_errors = 0 ∨ (total_errors / total_requests) < 0.1
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Can Generate
+ * 
+ * Predicate indicating system can accept new generation requests.
+ */
+┌─ CanGenerate ───────────────────────────────────────────────────────
+│ SystemState
+│ session_id? : SESSION_ID
+│ 
+│ /* System must be ready */
+│ SystemReady
+│ 
+│ /* Session must exist and be active */
+│ session_id? ∈ dom session_manager.sessions
+│ session_manager.sessions(session_id?).is_active = true
+│ 
+│ /* No active generation for this session */
+│ ¬∃ g : active_generations • g.session_id = session_id?
+│ 
+│ /* Model must support required capabilities */
+│ model_state.config.capabilities.streaming = true ∨
+│ # generation_queue < 10  /* Queue not full */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * OpenCog Active
+ * 
+ * Predicate indicating OpenCog integration is fully operational.
+ */
+┌─ OpenCogActive ─────────────────────────────────────────────────────
+│ SystemState
+│ 
+│ opencog.is_active = true
+│ opencog.orchestrator.is_running = true
+│ # opencog.orchestrator.agents ≥ 1
+│ 
+│ /* At least one agent in active state */
+│ ∃ a : ran opencog.orchestrator.agents • 
+│   a.state ∈ { active, thinking, generating, coordinating }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Model Loaded Successfully
+ * 
+ * Predicate indicating a model is loaded and operational.
+ */
+┌─ ModelLoadedSuccessfully ───────────────────────────────────────────
+│ SystemState
+│ 
+│ model_state.is_loaded = true
+│ model_state.vocab_size > 0
+│ model_state.max_sequence_length > 0
+│ 
+│ /* Resources allocated appropriately */
+│ model_state.config.use_gpu ⇒ 
+│   model_state.gpu_memory_allocated > 0
+│ 
+│ ¬model_state.config.use_gpu ⇒ 
+│   model_state.ram_memory_allocated > 0
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * END OF SYSTEM STATE SPECIFICATION
+ ******************************************************************************/

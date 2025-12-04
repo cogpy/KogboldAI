@@ -1,0 +1,593 @@
+/*******************************************************************************
+ * KoboldAI Data Model Formal Specification (Z++)
+ * 
+ * This specification defines the formal data structures and invariants for
+ * the KoboldAI story generation system data layer, including story storage,
+ * model configuration, and generation parameters.
+ *
+ * Version: 1.0.0
+ * Date: 2025-12-04
+ * Based on: KoboldAI v1.19.2
+ ******************************************************************************/
+
+/******************************************************************************
+ * SECTION 1: Base Types and Constants
+ ******************************************************************************/
+
+/* Basic type definitions derived from the Python codebase */
+[TOKEN_ID, STORY_CHUNK_ID, AGENT_ID, MODEL_ID, SESSION_ID]
+
+/* String as sequence of characters */
+STRING == seq CHAR
+
+/* JSON-compatible value types */
+JSON_VALUE ::= null
+             | boolean⟨⟨BOOL⟩⟩  
+             | number⟨⟨ℤ⟩⟩
+             | string⟨⟨STRING⟩⟩
+             | array⟨⟨seq JSON_VALUE⟩⟩
+             | object⟨⟨STRING ↦ JSON_VALUE⟩⟩
+
+/* File path */
+PATH == STRING
+
+/* Timestamp (Unix epoch in seconds) */
+TIMESTAMP == ℤ
+
+/* Floating point values for probabilities and parameters */
+PROBABILITY == { r : ℝ | 0.0 ≤ r ∧ r ≤ 1.0 }
+TEMPERATURE == { r : ℝ | r ≥ 0.0 }
+REPETITION_PENALTY == { r : ℝ | r ≥ 0.0 }
+
+/* Generation modes */
+GenerationMode ::= novel | adventure | chatbot
+
+/* Agent states for OpenCog integration */
+AgentState ::= idle | active | thinking | generating | coordinating | suspended
+
+/* Model backend types */
+ModelBackend ::= hf_torch | hf_mtj | exllama | exllamav2 | gptq | awq | 
+                 koboldcpp | openai | gooseai | horde | readonly
+
+/******************************************************************************
+ * SECTION 2: Story Data Model
+ ******************************************************************************/
+
+/*
+ * Story Chunk
+ * 
+ * Represents a single chunk of story text with unique identifier.
+ * Corresponds to KoboldStoryRegister entries in structures.py
+ */
+┌─ StoryChunk ────────────────────────────────────────────────────────
+│ chunk_id : STORY_CHUNK_ID
+│ text : STRING
+│ timestamp : TIMESTAMP
+│ 
+│ /* Invariants */
+│ text ≠ ⟨⟩  /* Non-empty text */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Story Register
+ * 
+ * Ordered collection of story chunks implementing the KoboldStoryRegister.
+ * Maintains insertion order and provides O(1) append operations.
+ */
+┌─ StoryRegister ─────────────────────────────────────────────────────
+│ chunks : seq StoryChunk
+│ next_id : STORY_CHUNK_ID
+│ id_map : STORY_CHUNK_ID ↦ ℕ  /* Maps chunk ID to sequence index */
+│ 
+│ /* Invariants */
+│ /* IDs are unique and sequential */
+│ ∀ i, j : dom chunks • 
+│   i ≠ j ⇒ chunks(i).chunk_id ≠ chunks(j).chunk_id
+│ 
+│ /* ID mapping is consistent with sequence */
+│ ∀ i : dom chunks • 
+│   id_map(chunks(i).chunk_id) = i
+│ 
+│ /* next_id is always greater than all existing IDs */
+│ ∀ i : dom chunks • 
+│   chunks(i).chunk_id < next_id
+│ 
+│ /* Domain of id_map matches chunk IDs */
+│ dom id_map = { c : chunks • c.chunk_id }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Memory Context
+ * 
+ * Long-term context information maintained across generations.
+ * Appears at the beginning of the context window.
+ */
+┌─ MemoryContext ─────────────────────────────────────────────────────
+│ content : STRING
+│ enabled : BOOL
+│ position : ℤ  /* Position in context assembly, typically 0 */
+│ 
+│ /* Invariants */
+│ position ≥ 0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Author's Note
+ * 
+ * Directive inserted at a specific position in the context to guide generation.
+ */
+┌─ AuthorsNote ───────────────────────────────────────────────────────
+│ content : STRING
+│ enabled : BOOL
+│ position : ℤ  /* Tokens from end of context, negative means from start */
+│ 
+│ /* Invariants */
+│ /* Position can be negative (from start) or positive (from end) */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * World Info Entry
+ * 
+ * Context information triggered by keywords in the story.
+ * Implements smart context injection based on relevance.
+ */
+┌─ WorldInfoEntry ────────────────────────────────────────────────────
+│ uid : ℕ
+│ title : STRING
+│ content : STRING
+│ keywords : seq STRING  /* Trigger keywords */
+│ key_relative : BOOL    /* Use keys from related entries */
+│ selective : BOOL       /* Only inject when keywords match */
+│ constant : BOOL        /* Always include regardless of keywords */
+│ folder : STRING        /* Organizational folder */
+│ 
+│ /* Invariants */
+│ keywords ≠ ⟨⟩ ∨ constant  /* Must have keywords unless constant */
+│ content ≠ ""
+│ ∀ k : ran keywords • k ≠ ""  /* No empty keywords */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * World Info Collection
+ * 
+ * Manages all world info entries for a story.
+ */
+┌─ WorldInfo ─────────────────────────────────────────────────────────
+│ entries : seq WorldInfoEntry
+│ next_uid : ℕ
+│ 
+│ /* Invariants */
+│ /* UIDs are unique */
+│ ∀ i, j : dom entries • 
+│   i ≠ j ⇒ entries(i).uid ≠ entries(j).uid
+│ 
+│ /* next_uid is always greater than all existing UIDs */
+│ ∀ i : dom entries • 
+│   entries(i).uid < next_uid
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Complete Story
+ * 
+ * Full representation of a story with all associated metadata and context.
+ * Corresponds to story JSON file format.
+ */
+┌─ Story ─────────────────────────────────────────────────────────────
+│ gamestarted : BOOL
+│ prompt : STRING           /* Initial story prompt */
+│ story_register : StoryRegister
+│ memory : MemoryContext
+│ authors_note : AuthorsNote
+│ world_info : WorldInfo
+│ generation_mode : GenerationMode
+│ 
+│ /* File persistence */
+│ filepath : PATH
+│ autosave : BOOL
+│ save_version : STRING     /* Format version */
+│ 
+│ /* Invariants */
+│ /* If game started, must have either prompt or story chunks */
+│ gamestarted ⇒ (prompt ≠ "" ∨ # story_register.chunks > 0)
+│ 
+│ /* Save version matches expected format */
+│ save_version ∈ { "v1", "v2" }
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 3: Model Configuration Data Model
+ ******************************************************************************/
+
+/*
+ * Generation Parameters
+ * 
+ * Sampling and generation control parameters.
+ * Corresponds to gensettings and generation options in API.
+ */
+┌─ GenerationParameters ──────────────────────────────────────────────
+│ /* Core sampling parameters */
+│ temperature : TEMPERATURE
+│ top_p : PROBABILITY        /* Nucleus sampling */
+│ top_k : ℕ                   /* Top-k sampling */
+│ top_a : PROBABILITY         /* Top-a sampling */
+│ typical : PROBABILITY       /* Typical sampling */
+│ tfs : PROBABILITY          /* Tail-free sampling */
+│ 
+│ /* Repetition control */
+│ rep_pen : REPETITION_PENALTY
+│ rep_pen_range : ℕ          /* Token range for repetition penalty */
+│ rep_pen_slope : ℝ          /* Slope of repetition penalty */
+│ 
+│ /* Length control */
+│ max_length : ℕ             /* Maximum tokens to generate */
+│ max_context_length : ℕ    /* Maximum context window size */
+│ 
+│ /* Output control */
+│ stop_sequence : seq STRING /* Sequences that stop generation */
+│ sampler_order : seq ℕ     /* Order to apply samplers */
+│ sampler_seed : ℕ          /* Random seed for reproducibility */
+│ sampler_full_determinism : BOOL
+│ 
+│ /* Formatting */
+│ frmttriminc : BOOL        /* Trim incomplete sentences */
+│ frmtrmblln : BOOL         /* Remove blank lines */
+│ singleline : BOOL         /* Only return single line */
+│ 
+│ /* Invariants */
+│ max_length > 0
+│ max_context_length > 0
+│ max_length ≤ max_context_length
+│ rep_pen_range > 0
+│ 
+│ /* Sampler order contains valid sampler IDs (0-6) */
+│ ran sampler_order ⊆ { 0, 1, 2, 3, 4, 5, 6 }
+│ # sampler_order = 7  /* All samplers must be present */
+│ 
+│ /* No empty stop sequences */
+│ ∀ s : ran stop_sequence • s ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Model Capabilities
+ * 
+ * Flags indicating what features a model backend supports.
+ * Corresponds to ModelCapabilities dataclass in inference_model.py
+ */
+┌─ ModelCapabilities ─────────────────────────────────────────────────
+│ embedding_manipulation : BOOL   /* Can modify embeddings */
+│ post_token_hooks : BOOL        /* Supports per-token callbacks */
+│ sampler_control : BOOL         /* Full control over sampling */
+│ streaming : BOOL               /* Supports token streaming */
+│ quantization : BOOL            /* Supports quantization */
+│ multi_gpu : BOOL               /* Supports multi-GPU */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Model Configuration
+ * 
+ * Configuration for loading and using an AI model.
+ */
+┌─ ModelConfig ───────────────────────────────────────────────────────
+│ model_id : MODEL_ID
+│ model_name : STRING            /* HuggingFace model ID or path */
+│ backend : ModelBackend
+│ capabilities : ModelCapabilities
+│ 
+│ /* Hardware configuration */
+│ use_gpu : BOOL
+│ gpu_layers : ℕ               /* Number of layers on GPU */
+│ use_breakmodel : BOOL        /* Split across multiple GPUs */
+│ disk_layers : ℕ              /* Number of layers on disk */
+│ 
+│ /* Memory optimization */
+│ use_lowmem : BOOL            /* Low memory mode */
+│ use_quantization : BOOL
+│ quantization_bits : ℕ       /* 4 or 8 bit quantization */
+│ 
+│ /* Model metadata */
+│ revision : STRING            /* Git revision or "main" */
+│ is_local : BOOL             /* Local vs HuggingFace Hub */
+│ model_path : PATH           /* Local filesystem path */
+│ 
+│ /* Invariants */
+│ use_quantization ⇒ quantization_bits ∈ { 4, 8 }
+│ use_breakmodel ⇒ use_gpu
+│ disk_layers > 0 ⇒ use_breakmodel
+│ is_local ⇒ model_path ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 4: OpenCog Agent Data Model
+ ******************************************************************************/
+
+/*
+ * Agent Profile
+ * 
+ * Configuration and characteristics of a cognitive agent.
+ * Corresponds to AgentProfile dataclass in agent_orchestrator.py
+ */
+┌─ AgentProfile ──────────────────────────────────────────────────────
+│ agent_id : AGENT_ID
+│ name : STRING
+│ role : STRING                  /* narrative_coordinator, world_manager, etc. */
+│ specialization : STRING        /* story_structure, world_consistency, etc. */
+│ 
+│ /* Personality and capabilities */
+│ personality_traits : STRING ↦ PROBABILITY  /* Trait scores */
+│ capabilities : ℙ STRING       /* Set of capability names */
+│ 
+│ /* Configuration */
+│ memory_capacity : ℕ
+│ creativity_level : PROBABILITY
+│ focus_areas : seq STRING
+│ 
+│ /* Interaction preferences */
+│ collaboration_style : STRING   /* leading, supporting, collaborative */
+│ 
+│ /* Invariants */
+│ memory_capacity > 0
+│ agent_id ≠ ""
+│ name ≠ ""
+│ 
+│ /* All personality trait scores are valid probabilities */
+│ ∀ t : dom personality_traits • 
+│   personality_traits(t) ∈ PROBABILITY
+│ 
+│ /* Collaboration style is valid */
+│ collaboration_style ∈ { "leading", "supporting", "collaborative" }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Agent Memory Entry
+ * 
+ * Individual memory item stored by a cognitive agent.
+ */
+┌─ AgentMemoryEntry ──────────────────────────────────────────────────
+│ timestamp : TIMESTAMP
+│ memory_type : STRING           /* state_change, interaction, observation */
+│ content : JSON_VALUE
+│ importance : PROBABILITY       /* Memory importance/relevance */
+│ decay_rate : ℝ                /* How quickly memory fades */
+│ 
+│ /* Invariants */
+│ decay_rate ≥ 0.0 ∧ decay_rate ≤ 1.0
+│ memory_type ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Agent Goal
+ * 
+ * A goal maintained in an agent's goal stack.
+ */
+┌─ AgentGoal ─────────────────────────────────────────────────────────
+│ goal_id : ℕ
+│ description : STRING
+│ priority : PROBABILITY
+│ status : STRING                /* active, completed, suspended, failed */
+│ created_at : TIMESTAMP
+│ deadline : TIMESTAMP          /* Optional deadline */
+│ 
+│ /* Invariants */
+│ description ≠ ""
+│ status ∈ { "active", "completed", "suspended", "failed" }
+│ deadline ≥ created_at ∨ deadline = 0  /* 0 means no deadline */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Cognitive Agent Instance
+ * 
+ * Runtime state of a cognitive agent.
+ * Corresponds to CognitiveAgent class in agent_orchestrator.py
+ */
+┌─ CognitiveAgent ────────────────────────────────────────────────────
+│ profile : AgentProfile
+│ state : AgentState
+│ 
+│ /* Cognitive state */
+│ memory : seq AgentMemoryEntry
+│ attention_focus : STRING      /* Current focus of attention */
+│ current_goals : seq AgentGoal
+│ cognitive_load : PROBABILITY  /* Current cognitive load */
+│ 
+│ /* Interaction history */
+│ interaction_count : ℕ
+│ last_action_time : TIMESTAMP
+│ 
+│ /* Invariants */
+│ /* Memory doesn't exceed capacity */
+│ # memory ≤ profile.memory_capacity
+│ 
+│ /* Goals are ordered by priority (descending) */
+│ ∀ i, j : dom current_goals • 
+│   i < j ⇒ current_goals(i).priority ≥ current_goals(j).priority
+│ 
+│ /* Only active or suspended goals in current_goals */
+│ ∀ g : ran current_goals • 
+│   g.status ∈ { "active", "suspended" }
+│ 
+│ /* Timestamps are monotonically increasing */
+│ ∀ i, j : dom memory • 
+│   i < j ⇒ memory(i).timestamp ≤ memory(j).timestamp
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 5: Session and Runtime State
+ ******************************************************************************/
+
+/*
+ * User Session
+ * 
+ * Represents an active user session with the system.
+ */
+┌─ UserSession ───────────────────────────────────────────────────────
+│ session_id : SESSION_ID
+│ created_at : TIMESTAMP
+│ last_activity : TIMESTAMP
+│ 
+│ /* Session state */
+│ is_active : BOOL
+│ story : Story
+│ model_config : ModelConfig
+│ generation_params : GenerationParameters
+│ 
+│ /* WebSocket connection */
+│ socket_connected : BOOL
+│ 
+│ /* Invariants */
+│ last_activity ≥ created_at
+│ is_active ⇒ socket_connected ∨ ¬socket_connected  /* Can be active without socket */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Soft Prompt
+ * 
+ * Trainable prompt embeddings that modify model behavior.
+ * Represents .tensor files loaded from softprompts directory.
+ */
+┌─ SoftPrompt ────────────────────────────────────────────────────────
+│ name : STRING
+│ description : STRING
+│ filepath : PATH
+│ 
+│ /* Tensor data */
+│ embedding_size : ℕ
+│ num_tokens : ℕ
+│ tensor_data : seq ℝ        /* Flattened tensor */
+│ 
+│ /* Metadata */
+│ created_date : TIMESTAMP
+│ model_compatibility : seq STRING  /* Compatible model names */
+│ 
+│ /* Invariants */
+│ # tensor_data = embedding_size × num_tokens
+│ embedding_size > 0
+│ num_tokens > 0
+│ name ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Lua Userscript
+ * 
+ * User-defined Lua script for customizing generation.
+ * Represents scripts in userscripts directory.
+ */
+┌─ LuaUserscript ─────────────────────────────────────────────────────
+│ script_name : STRING
+│ filepath : PATH
+│ code : STRING              /* Lua source code */
+│ enabled : BOOL
+│ 
+│ /* Script metadata */
+│ description : STRING
+│ author : STRING
+│ version : STRING
+│ 
+│ /* Hook points the script registers */
+│ hooks : ℙ STRING          /* Set of hook names */
+│ 
+│ /* Invariants */
+│ code ≠ ""
+│ script_name ≠ ""
+│ hooks ⊆ { "input", "output", "generation", "token" }
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 6: API Request/Response Models
+ ******************************************************************************/
+
+/*
+ * Generation Request
+ * 
+ * API request for text generation.
+ * Corresponds to /api/v1/generate endpoint.
+ */
+┌─ GenerationRequest ─────────────────────────────────────────────────
+│ prompt : STRING
+│ 
+│ /* Context control flags */
+│ use_story : BOOL           /* Include story from session */
+│ use_memory : BOOL          /* Include memory */
+│ use_authors_note : BOOL    /* Include author's note */
+│ use_world_info : BOOL      /* Include world info */
+│ 
+│ /* Generation parameters (override session defaults) */
+│ params : GenerationParameters
+│ 
+│ /* Output control */
+│ quiet : BOOL               /* Suppress console output */
+│ 
+│ /* Invariants */
+│ prompt ≠ "" ∨ use_story    /* Must have prompt or use story */
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Generation Result
+ * 
+ * Result of a generation request.
+ */
+┌─ GenerationResult ──────────────────────────────────────────────────
+│ results : seq GeneratedText
+│ 
+│ /* Each generated alternative */
+│ GeneratedText
+│   text : STRING
+│   tokens : seq TOKEN_ID
+│   logprobs : seq ℝ        /* Log probabilities of tokens */
+│   
+│ /* Invariants for each GeneratedText */
+│ ∀ r : ran results • 
+│   # r.tokens = # r.logprobs ∧
+│   r.text ≠ ""
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 7: Data Integrity Constraints
+ ******************************************************************************/
+
+/*
+ * Global Story Consistency
+ * 
+ * Cross-cutting constraints that must hold across story data.
+ */
+┌─ StoryConsistency ──────────────────────────────────────────────────
+│ story : Story
+│ 
+│ /* World info keywords must not conflict with each other */
+│ ∀ e1, e2 : ran story.world_info.entries •
+│   e1.uid ≠ e2.uid ∧ e1.selective ∧ e2.selective ⇒
+│   { k : ran e1.keywords | k ∈ ran e2.keywords } ≠ ∅ ⇒
+│   e1.content ≠ e2.content  /* Different content for overlapping keywords */
+│ 
+│ /* Story chunks maintain temporal ordering */
+│ ∀ i, j : dom story.story_register.chunks •
+│   i < j ⇒ 
+│   story.story_register.chunks(i).timestamp ≤ 
+│   story.story_register.chunks(j).timestamp
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Token Budget Constraint
+ * 
+ * Ensures context assembly respects model token limits.
+ */
+┌─ TokenBudgetConstraint ─────────────────────────────────────────────
+│ story : Story
+│ model_config : ModelConfig
+│ params : GenerationParameters
+│ 
+│ /* Helper function: count tokens in text */
+│ token_count : STRING → ℕ
+│ 
+│ /* Total context must fit within model limits */
+│ token_count(story.memory.content) + 
+│ token_count(story.authors_note.content) +
+│ (Σ e : ran story.world_info.entries | e.constant • 
+│    token_count(e.content)) +
+│ (Σ c : ran story.story_register.chunks • 
+│    token_count(c.text))
+│ ≤ params.max_context_length
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * END OF DATA MODEL SPECIFICATION
+ ******************************************************************************/

@@ -1,0 +1,766 @@
+/*******************************************************************************
+ * KoboldAI External Integrations Formal Specification (Z++)
+ * 
+ * This specification defines the formal contracts for external service
+ * integrations, including AI model providers (OpenAI, GooseAI, AI Horde),
+ * the HuggingFace Hub, network tunneling services, and WebSocket communication.
+ *
+ * Version: 1.0.0
+ * Date: 2025-12-04
+ * Based on: KoboldAI v1.19.2
+ ******************************************************************************/
+
+/* Import system state and data model definitions */
+/* Assume all types from previous specifications are available */
+
+/******************************************************************************
+ * SECTION 1: External AI Model Provider Integrations
+ ******************************************************************************/
+
+/*
+ * OpenAI API Integration
+ * 
+ * Contract for interacting with OpenAI's API (GPT-3, GPT-4, etc.)
+ */
+┌─ OpenAIAPI ─────────────────────────────────────────────────────────
+│ /* Configuration */
+│ api_key : STRING
+│ organization : STRING
+│ api_base_url : STRING         /* Default: https://api.openai.com/v1 */
+│ model_name : STRING            /* e.g., "gpt-3.5-turbo", "gpt-4" */
+│ 
+│ /* Rate limiting */
+│ max_tokens_per_minute : ℕ
+│ max_requests_per_minute : ℕ
+│ current_tokens_used : ℕ
+│ current_requests_made : ℕ
+│ window_start : TIMESTAMP
+│ 
+│ /* Invariants */
+│ api_key ≠ ""
+│ model_name ≠ ""
+│ current_tokens_used ≤ max_tokens_per_minute
+│ current_requests_made ≤ max_requests_per_minute
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * OpenAI Generation Request
+ * 
+ * Formats a request to OpenAI's completion API.
+ */
+┌─ OpenAIGenerationRequest ───────────────────────────────────────────
+│ OpenAIAPI
+│ prompt? : STRING
+│ params? : GenerationParameters
+│ response! : STRING
+│ tokens_used! : ℕ
+│ success! : BOOL
+│ error_message! : STRING
+│ 
+│ /* Preconditions */
+│ api_key ≠ ""
+│ current_requests_made < max_requests_per_minute
+│ prompt? ≠ ""
+│ 
+│ /* Request format */
+│ let request_body == 
+│   (| model := model_name,
+│      prompt := prompt?,
+│      max_tokens := params?.max_length,
+│      temperature := params?.temperature,
+│      top_p := params?.top_p,
+│      n := 1,  /* Number of completions */
+│      stop := params?.stop_sequence
+│   |)
+│ 
+│ /* HTTP POST to API */
+│ let http_response = 
+│   POST(api_base_url ^ "/completions", 
+│        headers := { "Authorization" ↦ "Bearer " ^ api_key,
+│                    "Content-Type" ↦ "application/json" },
+│        body := json_encode(request_body))
+│ 
+│ /* Success case */
+│ http_response.status = 200 ⇒
+│   let response_json = json_decode(http_response.body)
+│   response! = response_json.choices[0].text ∧
+│   tokens_used! = response_json.usage.total_tokens ∧
+│   success! = true ∧
+│   current_tokens_used' = current_tokens_used + tokens_used! ∧
+│   current_requests_made' = current_requests_made + 1
+│ 
+│ /* Error cases */
+│ http_response.status ∈ { 401, 403 } ⇒
+│   success! = false ∧
+│   error_message! = "Authentication failed"
+│ 
+│ http_response.status = 429 ⇒
+│   success! = false ∧
+│   error_message! = "Rate limit exceeded"
+│ 
+│ http_response.status ≥ 500 ⇒
+│   success! = false ∧
+│   error_message! = "OpenAI service error"
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * GooseAI API Integration
+ * 
+ * Contract for GooseAI API (similar interface to OpenAI).
+ */
+┌─ GooseAIAPI ────────────────────────────────────────────────────────
+│ /* Configuration */
+│ api_key : STRING
+│ api_base_url : STRING         /* Default: https://api.goose.ai/v1 */
+│ model_name : STRING            /* e.g., "gpt-neo-20b" */
+│ 
+│ /* Pricing tracking */
+│ tokens_processed : ℕ
+│ estimated_cost : ℝ            /* USD */
+│ 
+│ /* Invariants */
+│ api_key ≠ ""
+│ model_name ≠ ""
+│ estimated_cost ≥ 0.0
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * GooseAI Generation Request
+ * 
+ * Similar to OpenAI but with GooseAI-specific features.
+ */
+┌─ GooseAIGenerationRequest ──────────────────────────────────────────
+│ GooseAIAPI
+│ prompt? : STRING
+│ params? : GenerationParameters
+│ response! : STRING
+│ tokens_used! : ℕ
+│ cost! : ℝ
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ api_key ≠ ""
+│ prompt? ≠ ""
+│ 
+│ /* Request similar to OpenAI */
+│ let request_body == 
+│   (| model := model_name,
+│      prompt := prompt?,
+│      max_tokens := params?.max_length,
+│      temperature := params?.temperature,
+│      top_p := params?.top_p,
+│      top_k := params?.top_k,  /* GooseAI supports top_k */
+│      repetition_penalty := params?.rep_pen,
+│      stop := params?.stop_sequence
+│   |)
+│ 
+│ /* HTTP POST to API */
+│ let http_response = 
+│   POST(api_base_url ^ "/engines/" ^ model_name ^ "/completions",
+│        headers := { "Authorization" ↦ "Bearer " ^ api_key },
+│        body := json_encode(request_body))
+│ 
+│ /* Success case */
+│ http_response.status = 200 ⇒
+│   let response_json = json_decode(http_response.body)
+│   response! = response_json.choices[0].text ∧
+│   tokens_used! = response_json.usage.total_tokens ∧
+│   cost! = calculate_gooseai_cost(tokens_used!, model_name) ∧
+│   success! = true ∧
+│   tokens_processed' = tokens_processed + tokens_used! ∧
+│   estimated_cost' = estimated_cost + cost!
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * AI Horde Integration
+ * 
+ * Distributed, volunteer-powered AI generation network.
+ */
+┌─ AIHordeAPI ────────────────────────────────────────────────────────
+│ /* Configuration */
+│ api_key : STRING               /* Can be "0000000000" for anonymous */
+│ api_base_url : STRING         /* Default: https://horde.koboldai.net */
+│ 
+│ /* Request tracking */
+│ active_requests : ℙ STRING    /* Set of active request IDs */
+│ completed_requests : ℕ
+│ failed_requests : ℕ
+│ 
+│ /* Kudos system (Horde's reward/priority system) */
+│ kudos_balance : ℤ
+│ kudos_earned : ℕ
+│ kudos_spent : ℕ
+│ 
+│ /* Invariants */
+│ api_base_url ≠ ""
+│ kudos_balance = kudos_earned - kudos_spent
+│ completed_requests + failed_requests ≥ # active_requests
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * AI Horde Async Generation Request
+ * 
+ * Two-phase request: submit job, then poll for completion.
+ */
+┌─ AIHordeGenerationRequest ──────────────────────────────────────────
+│ AIHordeAPI
+│ prompt? : STRING
+│ params? : GenerationParameters
+│ models? : seq STRING           /* Preferred models */
+│ request_id! : STRING
+│ 
+│ /* Phase 1: Submit generation request */
+│ let request_body == 
+│   (| prompt := prompt?,
+│      params := (| n := 1,
+│                   max_length := params?.max_length,
+│                   temperature := params?.temperature,
+│                   top_p := params?.top_p,
+│                   top_k := params?.top_k,
+│                   tfs := params?.tfs,
+│                   rep_pen := params?.rep_pen,
+│                   rep_pen_range := params?.rep_pen_range,
+│                   stop_sequence := params?.stop_sequence |),
+│      models := models?,
+│      trusted_workers := true
+│   |)
+│ 
+│ /* HTTP POST to submit */
+│ let http_response = 
+│   POST(api_base_url ^ "/api/v2/generate/text/async",
+│        headers := { "apikey" ↦ api_key,
+│                    "Content-Type" ↦ "application/json" },
+│        body := json_encode(request_body))
+│ 
+│ /* Extract request ID */
+│ http_response.status = 202 ⇒
+│   let response_json = json_decode(http_response.body)
+│   request_id! = response_json.id ∧
+│   active_requests' = active_requests ∪ { request_id! }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * AI Horde Poll for Result
+ * 
+ * Polls for completion of an async generation request.
+ */
+┌─ AIHordePollResult ─────────────────────────────────────────────────
+│ AIHordeAPI
+│ request_id? : STRING
+│ is_complete! : BOOL
+│ response! : STRING
+│ wait_time! : ℕ                /* Estimated wait time in seconds */
+│ 
+│ /* Preconditions */
+│ request_id? ∈ active_requests
+│ 
+│ /* HTTP GET to check status */
+│ let http_response = 
+│   GET(api_base_url ^ "/api/v2/generate/text/status/" ^ request_id?,
+│       headers := { "apikey" ↦ api_key })
+│ 
+│ /* Parse response */
+│ let status_json = json_decode(http_response.body)
+│ 
+│ /* Still processing */
+│ status_json.done = false ⇒
+│   is_complete! = false ∧
+│   wait_time! = status_json.wait_time
+│ 
+│ /* Completed successfully */
+│ status_json.done = true ∧ status_json.faulted = false ⇒
+│   is_complete! = true ∧
+│   response! = status_json.generations[0].text ∧
+│   active_requests' = active_requests ∖ { request_id? } ∧
+│   completed_requests' = completed_requests + 1 ∧
+│   kudos_spent' = kudos_spent + status_json.kudos
+│ 
+│ /* Failed */
+│ status_json.faulted = true ⇒
+│   is_complete! = true ∧
+│   active_requests' = active_requests ∖ { request_id? } ∧
+│   failed_requests' = failed_requests + 1
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 2: HuggingFace Hub Integration
+ ******************************************************************************/
+
+/*
+ * HuggingFace Hub API
+ * 
+ * Integration with HuggingFace model repository.
+ */
+┌─ HuggingFaceHub ────────────────────────────────────────────────────
+│ /* Configuration */
+│ api_token : STRING             /* Optional, for private models */
+│ cache_dir : PATH
+│ 
+│ /* Downloaded models tracking */
+│ downloaded_models : STRING ↦ PATH  /* Model ID -> local path */
+│ 
+│ /* Invariants */
+│ cache_dir ≠ ""
+│ ∀ model_id : dom downloaded_models • 
+│   file_exists(downloaded_models(model_id))
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Download Model from Hub
+ * 
+ * Downloads a model from HuggingFace Hub to local cache.
+ */
+┌─ DownloadModel ─────────────────────────────────────────────────────
+│ HuggingFaceHub
+│ model_id? : STRING
+│ revision? : STRING             /* Git revision, default "main" */
+│ local_path! : PATH
+│ success! : BOOL
+│ 
+│ /* Preconditions */
+│ model_id? ≠ ""
+│ model_id? ∉ dom downloaded_models  /* Not already downloaded */
+│ 
+│ /* Check if model exists on Hub */
+│ let model_info_url = 
+│   "https://huggingface.co/api/models/" ^ model_id?
+│ let model_info_response = GET(model_info_url)
+│ 
+│ model_info_response.status ≠ 200 ⇒
+│   success! = false
+│ 
+│ /* Download model files */
+│ model_info_response.status = 200 ⇒
+│   let target_dir = cache_dir ^ "/" ^ model_id?
+│   let files_to_download = 
+│     ["config.json", "pytorch_model.bin", "tokenizer.json", 
+│      "vocab.json", "merges.txt"]
+│   
+│   /* Download each required file */
+│   ∀ filename : files_to_download •
+│     let file_url = "https://huggingface.co/" ^ model_id? ^ 
+│                    "/resolve/" ^ revision? ^ "/" ^ filename
+│     let file_response = GET(file_url)
+│     file_response.status = 200 ⇒
+│       write_file(target_dir ^ "/" ^ filename, 
+│                  file_response.body)
+│   
+│   /* Update tracking */
+│   local_path! = target_dir ∧
+│   downloaded_models' = 
+│     downloaded_models ∪ { model_id? ↦ target_dir } ∧
+│   success! = true
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Check Model Update
+ * 
+ * Checks if a newer version of a model is available on the Hub.
+ */
+┌─ CheckModelUpdate ──────────────────────────────────────────────────
+│ ΞHuggingFaceHub
+│ model_id? : STRING
+│ update_available! : BOOL
+│ latest_revision! : STRING
+│ 
+│ /* Preconditions */
+│ model_id? ∈ dom downloaded_models
+│ 
+│ /* Query Hub for latest commit */
+│ let commits_url = 
+│   "https://huggingface.co/api/models/" ^ model_id? ^ "/commits"
+│ let commits_response = GET(commits_url)
+│ 
+│ commits_response.status = 200 ⇒
+│   let commits_json = json_decode(commits_response.body)
+│   latest_revision! = commits_json[0].sha ∧
+│   
+│   /* Compare with local version */
+│   let local_revision = 
+│     read_file(downloaded_models(model_id?) ^ "/.git/HEAD")
+│   update_available! = (latest_revision! ≠ local_revision)
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 3: Network Tunneling Integrations
+ ******************************************************************************/
+
+/*
+ * Cloudflare Tunnel Integration
+ * 
+ * Integration with Cloudflare for secure public access.
+ */
+┌─ CloudflareTunnel ──────────────────────────────────────────────────
+│ /* Configuration */
+│ is_active : BOOL
+│ tunnel_url : STRING            /* e.g., "https://abc123.trycloudflare.com" */
+│ local_port : ℕ
+│ 
+│ /* Connection state */
+│ is_connected : BOOL
+│ connection_time : TIMESTAMP
+│ 
+│ /* Invariants */
+│ is_active ⇒ tunnel_url ≠ ""
+│ is_active ⇒ local_port > 0 ∧ local_port ≤ 65535
+│ is_connected ⇒ is_active
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Start Cloudflare Tunnel
+ * 
+ * Initiates a Cloudflare tunnel to the local server.
+ */
+┌─ StartCloudflareTunnel ─────────────────────────────────────────────
+│ ΔCloudflareTunnel
+│ port? : ℕ
+│ success! : BOOL
+│ url! : STRING
+│ 
+│ /* Preconditions */
+│ ¬is_active
+│ port? > 0 ∧ port? ≤ 65535
+│ 
+│ /* Start tunnel process (external) */
+│ /* This invokes flask-cloudflared library */
+│ let tunnel_process = 
+│   start_process("cloudflared", 
+│                 ["tunnel", "--url", "localhost:" ^ string(port?)])
+│ 
+│ /* Wait for tunnel URL */
+│ let tunnel_ready = wait_for_tunnel_ready(tunnel_process, 30)
+│ 
+│ /* Success case */
+│ tunnel_ready ⇒
+│   url! = extract_tunnel_url(tunnel_process.stdout) ∧
+│   is_active' = true ∧
+│   is_connected' = true ∧
+│   tunnel_url' = url! ∧
+│   local_port' = port? ∧
+│   connection_time' = current_time ∧
+│   success! = true
+│ 
+│ /* Failure case */
+│ ¬tunnel_ready ⇒
+│   is_active' = false ∧
+│   success! = false
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * ngrok Tunnel Integration
+ * 
+ * Alternative tunneling service with similar interface.
+ */
+┌─ NgrokTunnel ───────────────────────────────────────────────────────
+│ /* Configuration */
+│ is_active : BOOL
+│ auth_token : STRING            /* ngrok auth token */
+│ tunnel_url : STRING
+│ local_port : ℕ
+│ 
+│ /* Connection state */
+│ is_connected : BOOL
+│ connection_time : TIMESTAMP
+│ 
+│ /* Invariants */
+│ is_active ⇒ tunnel_url ≠ ""
+│ is_active ⇒ local_port > 0
+│ is_connected ⇒ is_active
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Start ngrok Tunnel
+ * 
+ * Similar to Cloudflare but using ngrok.
+ */
+┌─ StartNgrokTunnel ──────────────────────────────────────────────────
+│ ΔNgrokTunnel
+│ port? : ℕ
+│ success! : BOOL
+│ url! : STRING
+│ 
+│ /* Preconditions */
+│ ¬is_active
+│ port? > 0 ∧ port? ≤ 65535
+│ 
+│ /* Start ngrok via flask-ngrok */
+│ let ngrok_started = initialize_ngrok(port?, auth_token)
+│ 
+│ ngrok_started ⇒
+│   url! = get_ngrok_url() ∧
+│   is_active' = true ∧
+│   is_connected' = true ∧
+│   tunnel_url' = url! ∧
+│   local_port' = port? ∧
+│   success! = true
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 4: WebSocket Communication Protocol
+ ******************************************************************************/
+
+/*
+ * WebSocket Message Format
+ * 
+ * Standard message structure for client-server communication.
+ */
+┌─ WebSocketMessage ──────────────────────────────────────────────────
+│ cmd : STRING                   /* Command type */
+│ data : JSON_VALUE              /* Command-specific data */
+│ 
+│ /* Common commands */
+│ cmd ∈ { "submit",             /* Submit text for generation */
+│         "abort",              /* Abort ongoing generation */
+│         "loadrequest",        /* Load a story */
+│         "saverequest",        /* Save current story */
+│         "updatechunk",        /* Server sends story chunk update */
+│         "genseqs",            /* Server sends generation sequences */
+│         "setgamestate",       /* Server updates game state */
+│         "loadlistrequest",   /* Request list of saved stories */
+│         "message"            /* General message */
+│       }
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Client Submit Generation
+ * 
+ * Client requests text generation via WebSocket.
+ */
+┌─ ClientSubmitGeneration ────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ message? : WebSocketMessage
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom websocket.active_connections
+│ websocket.active_connections(session_id?) = true
+│ message?.cmd = "submit"
+│ 
+│ /* Extract generation parameters from message */
+│ let prompt = message?.data.data
+│ let actionmode = message?.data.actionmode
+│ let allowabort = message?.data.allowabort
+│ 
+│ /* Create generation request */
+│ let request == 
+│   (| prompt := prompt,
+│      use_story := true,
+│      use_memory := true,
+│      use_authors_note := true,
+│      use_world_info := true,
+│      params := session_manager.sessions(session_id?).generation_params,
+│      allowabort := allowabort
+│   |)
+│ 
+│ /* Invoke generation pipeline */
+│ ∃ result : GenerationResult •
+│   FullGenerationPipeline(request, session_id?, result)
+│ 
+│ /* Send response via WebSocket */
+│ websocket'.message_queue = 
+│   websocket.message_queue ^ 
+│   ⟨(session_id?, "updatechunk", 
+│     (| data := format_chunk_html(result.results[0].text) |))⟩
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * Server Send Update
+ * 
+ * Server sends an update message to a client via WebSocket.
+ */
+┌─ ServerSendUpdate ──────────────────────────────────────────────────
+│ ΔSystemState
+│ session_id? : SESSION_ID
+│ command? : STRING
+│ data? : JSON_VALUE
+│ 
+│ /* Preconditions */
+│ session_id? ∈ dom websocket.active_connections
+│ websocket.active_connections(session_id?) = true
+│ 
+│ /* Enqueue message */
+│ websocket'.message_queue = 
+│   websocket.message_queue ^ 
+│   ⟨(session_id?, command?, data?)⟩
+│ 
+│ /* Update statistics */
+│ websocket'.total_messages_sent = 
+│   websocket.total_messages_sent + 1
+│ 
+│ /* Other state unchanged */
+│ model_state' = model_state
+│ session_manager' = session_manager
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 5: REST API Contracts
+ ******************************************************************************/
+
+/*
+ * API Generation Endpoint
+ * 
+ * POST /api/v1/generate - Standard REST generation endpoint.
+ */
+┌─ APIGenerateEndpoint ───────────────────────────────────────────────
+│ ΞSystemState
+│ request_body? : JSON_VALUE
+│ response_body! : JSON_VALUE
+│ status_code! : ℕ
+│ 
+│ /* Parse request */
+│ let gen_request : GenerationRequest = 
+│   parse_generation_request(request_body?)
+│ 
+│ /* Validate request */
+│ gen_request.prompt = "" ∧ ¬gen_request.use_story ⇒
+│   status_code! = 400 ∧
+│   response_body! = (| error := "Must provide prompt or use_story" |)
+│ 
+│ /* Execute generation */
+│ gen_request.prompt ≠ "" ∨ gen_request.use_story ⇒
+│   ∃ session_id : SESSION_ID, result : GenerationResult •
+│     (session_id ∈ dom session_manager.sessions ∧
+│      FullGenerationPipeline(gen_request, session_id, result) ∧
+│      status_code! = 200 ∧
+│      response_body! = (| results := 
+│        ⟨(| text := result.results[0].text |)⟩ |))
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * API Model Info Endpoint
+ * 
+ * GET /api/v1/model - Returns information about loaded model.
+ */
+┌─ APIModelInfoEndpoint ──────────────────────────────────────────────
+│ ΞSystemState
+│ response_body! : JSON_VALUE
+│ status_code! : ℕ
+│ 
+│ /* Model loaded */
+│ model_state.is_loaded = true ⇒
+│   status_code! = 200 ∧
+│   response_body! = (|
+│     result := "ReadOnly",
+│     model := model_state.config.model_name,
+│     backend := string(model_state.config.backend),
+│     is_gpu := model_state.config.use_gpu,
+│     vocab_size := model_state.vocab_size,
+│     max_length := model_state.max_sequence_length
+│   |)
+│ 
+│ /* No model loaded */
+│ model_state.is_loaded = false ⇒
+│   status_code! = 503 ∧
+│   response_body! = (| error := "No model loaded" |)
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 6: Error Handling and Retry Logic
+ ******************************************************************************/
+
+/*
+ * API Request with Retry
+ * 
+ * Generic retry logic for external API calls with exponential backoff.
+ */
+┌─ APIRequestWithRetry ───────────────────────────────────────────────
+│ url? : STRING
+│ method? : STRING               /* GET, POST, etc. */
+│ headers? : STRING ↦ STRING
+│ body? : JSON_VALUE
+│ max_retries? : ℕ
+│ response! : JSON_VALUE
+│ success! : BOOL
+│ 
+│ /* Retry loop */
+│ let attempt = 0
+│ let backoff_seconds = 1
+│ 
+│ while attempt < max_retries? do
+│   let http_response = 
+│     HTTP_REQUEST(method?, url?, headers?, body?)
+│   
+│   /* Success */
+│   http_response.status ∈ { 200, 201, 202 } ⇒
+│     response! = json_decode(http_response.body) ∧
+│     success! = true ∧
+│     break
+│   
+│   /* Retryable errors */
+│   http_response.status ∈ { 429, 500, 502, 503, 504 } ⇒
+│     attempt := attempt + 1 ∧
+│     sleep(backoff_seconds) ∧
+│     backoff_seconds := backoff_seconds × 2
+│   
+│   /* Non-retryable errors */
+│   http_response.status ∈ { 400, 401, 403, 404 } ⇒
+│     success! = false ∧
+│     break
+│ 
+│ /* Exhausted retries */
+│ attempt = max_retries? ⇒
+│   success! = false
+└─────────────────────────────────────────────────────────────────────
+
+/*
+ * External Service Health Check
+ * 
+ * Verifies connectivity to an external service.
+ */
+┌─ ExternalServiceHealthCheck ────────────────────────────────────────
+│ service_url? : STRING
+│ timeout? : ℕ                  /* Seconds */
+│ is_healthy! : BOOL
+│ response_time! : ℝ           /* Milliseconds */
+│ 
+│ let start_time = current_time
+│ 
+│ /* Attempt connection */
+│ let http_response = 
+│   GET(service_url?, timeout := timeout?)
+│ 
+│ let end_time = current_time
+│ response_time! = (end_time - start_time) × 1000
+│ 
+│ /* Check status */
+│ is_healthy! = (http_response.status = 200 ∨ 
+│                http_response.status = 204)
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * SECTION 7: Integration State Management
+ ******************************************************************************/
+
+/*
+ * All External Services State
+ * 
+ * Aggregates state of all external service integrations.
+ */
+┌─ ExternalServicesState ─────────────────────────────────────────────
+│ /* API providers */
+│ openai : OpenAIAPI
+│ gooseai : GooseAIAPI
+│ ai_horde : AIHordeAPI
+│ 
+│ /* HuggingFace */
+│ huggingface_hub : HuggingFaceHub
+│ 
+│ /* Tunneling */
+│ cloudflare : CloudflareTunnel
+│ ngrok : NgrokTunnel
+│ 
+│ /* Health status */
+│ last_health_check : TIMESTAMP
+│ service_health : STRING ↦ BOOL  /* Service name -> is healthy */
+│ 
+│ /* Invariants */
+│ /* Only one tunneling service active at a time */
+│ ¬(cloudflare.is_active ∧ ngrok.is_active)
+│ 
+│ /* Health check not too stale */
+│ (current_time - last_health_check) < 300  /* 5 minutes */
+└─────────────────────────────────────────────────────────────────────
+
+/******************************************************************************
+ * END OF EXTERNAL INTEGRATIONS SPECIFICATION
+ ******************************************************************************/
