@@ -4,14 +4,78 @@ This module implements an OpenCog-inspired cognitive architecture for KoboldAI t
 
 ## Overview
 
-The OpenCog integration adds four main components to KoboldAI:
+The OpenCog integration now includes **seven main components** for KoboldAI:
 
 1. **Agent Orchestrator** - Manages multiple autonomous cognitive agents that collaborate on story generation
 2. **Adventure Telos** - Provides goal-oriented behavior and purpose-driven narrative agents  
 3. **Narrative Engine** - Implements story-weaving logic and maintains narrative coherence
 4. **World Builder** - Creates and manages fictional worlds with rich mythologies and interconnected elements
+5. **AtomSpace Integration** *(NEW)* - Knowledge representation system for narrative elements using probabilistic logic
+6. **Memory Hierarchy** *(NEW)* - Multi-level memory system with consolidation and retrieval
+7. **KoboldAI Integration** - Seamless integration with KoboldAI's story generation
 
 ## Architecture
+
+### AtomSpace Integration (`atomspace/`)
+
+**NEW in Phase 1.1** - Complete knowledge representation system for narrative elements:
+
+- **Atom Types** (`atom_types.py`): Defines narrative concepts, predicates, and relationships
+  - ConceptNode: Characters, locations, events, themes
+  - PredicateNode: Relationships like HasTrait, LocatedAt, CausedBy
+  - Links: Evaluation, Inheritance, Causal, Temporal connections
+
+- **AtomSpace Connector** (`atomspace_connector.py`): In-memory knowledge graph
+  - Pattern matching and queries
+  - Bidirectional sync with KoboldAI world state
+  - Incoming/outgoing link navigation
+  - Persistent storage capabilities
+
+- **PLN Reasoning** (`pln_reasoning.py`): Probabilistic Logic Networks for story logic
+  - Deduction, Abduction, Modus Ponens inference rules
+  - Forward and backward chaining
+  - Contradiction detection and resolution
+  - Narrative likelihood computation
+  - Truth values with confidence scores
+
+Key features:
+- OpenCog-compatible knowledge representation
+- Logical inference over narrative elements
+- Uncertain reasoning with confidence tracking
+- Automatic narrative consistency checking
+
+### Memory Hierarchy (`memory/`)
+
+**NEW in Phase 1.2** - Complete hierarchical memory system inspired by human cognition:
+
+- **Memory Types** (`hierarchy.py`):
+  - **Sensory Memory**: Immediate perception (1-3 story beats, seconds-minutes)
+  - **Working Memory**: Active narrative elements (~7 items, minutes-hours)
+  - **Episodic Memory**: Story events with timestamps (long-term)
+  - **Semantic Memory**: World knowledge and facts (long-term)
+  - **Procedural Memory**: Writing patterns and style rules (long-term)
+
+- **Memory Consolidation** (`consolidation.py`):
+  - Automatic transfer from short-term to long-term storage
+  - Importance and attention-based promotion
+  - Forgetting mechanism for weak memories
+  - Configurable consolidation rules
+  - Background consolidation scheduler
+
+- **Memory Retrieval** (`retrieval.py`):
+  - Retrieval by importance, attention, recency, strength
+  - Semantic similarity matching
+  - Associative retrieval with spreading activation
+  - Context-aware memory queries
+  - Combined scoring with custom weights
+
+Key features:
+- Multi-level memory hierarchy
+- Automatic memory consolidation
+- Attention-based memory management
+- Decay curves and forgetting
+- Associative retrieval
+- Thread-safe operations
 
 ### Agent Orchestrator (`agent_orchestrator.py`)
 
@@ -148,6 +212,102 @@ if integration:
     
     # Generate suggestions
     suggestions = integration.adventure_telos.generate_adventure_suggestions(context)
+```
+
+### Using AtomSpace for Knowledge Representation
+
+```python
+from opencog_integration.atomspace import (
+    AtomFactory, get_atomspace, get_atomspace_sync,
+    PLNReasoner, NarrativeReasoner
+)
+
+# Get AtomSpace instance
+atomspace = get_atomspace()
+
+# Create narrative elements
+hero = AtomFactory.create_character("Hero", traits={'brave': True, 'loyal': True})
+villain = AtomFactory.create_character("Villain", traits={'cunning': True})
+castle = AtomFactory.create_location("Castle", "Ancient fortress on a hill")
+
+# Add to AtomSpace
+atomspace.add_atom(hero)
+atomspace.add_atom(villain)
+atomspace.add_atom(castle)
+
+# Create relationships
+conflict = AtomFactory.create_relationship(
+    hero, PredicateType.CONFLICTS_WITH, villain, strength=0.9
+)
+location = AtomFactory.create_location_link(hero, castle)
+
+atomspace.add_atom(conflict)
+atomspace.add_atom(location)
+
+# Use PLN reasoning
+pln = PLNReasoner(atomspace)
+narrative_reasoner = NarrativeReasoner(atomspace)
+
+# Find plot holes (contradictions)
+contradictions = narrative_reasoner.find_plot_holes()
+
+# Evaluate narrative coherence
+coherence = narrative_reasoner.evaluate_narrative_coherence()
+print(f"Narrative coherence: {coherence}")
+
+# Sync with KoboldAI world state
+sync = get_atomspace_sync()
+world_state = {'characters': [...], 'locations': [...]}
+sync.sync_from_kobold(world_state)
+```
+
+### Using Memory Hierarchy
+
+```python
+from opencog_integration.memory import (
+    MemoryHierarchy, MemoryRetriever, MemoryQuery,
+    ConsolidationScheduler
+)
+
+# Create memory hierarchy
+memory = MemoryHierarchy()
+
+# Add memories to different levels
+memory.add_sensory("The dragon roars", importance=0.7)
+memory.add_working("Hero draws sword", importance=0.8)
+memory.add_episodic("Battle at dawn", timestamp=time.time(), importance=0.9)
+memory.add_semantic("Dragons breathe fire", category="creatures", importance=0.8)
+memory.add_procedural("Build tension before action", pattern_type="pacing")
+
+# Retrieve memories
+retriever = MemoryRetriever(memory)
+
+# By importance
+important_memories = retriever.retrieve_by_importance(top_k=5)
+
+# By semantic similarity
+similar = retriever.retrieve_by_semantic_similarity("dragon fight", top_k=3)
+
+# Context-aware retrieval
+context = {'characters': ['hero'], 'location': 'battlefield'}
+relevant = retriever.retrieve_context_relevant(context, top_k=5)
+
+# Query interface
+query = MemoryQuery(memory)
+results = query.query("dragon battle", top_k=10, use_associations=True)
+
+# Start automatic consolidation
+scheduler = ConsolidationScheduler(memory)
+scheduler.start(interval=60.0)  # Consolidate every 60 seconds
+
+# Or consolidate manually
+results = scheduler.run_now()
+print(f"Consolidated {results['total']} memories")
+
+# Get statistics
+stats = scheduler.get_stats()
+print(f"Memory stats: {stats['memory']}")
+print(f"Consolidation stats: {stats['consolidation']}")
 ```
 
 ### Custom Agent Creation
