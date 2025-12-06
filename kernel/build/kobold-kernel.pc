@@ -1,0 +1,10 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: kobold-kernel
+Description: KoboldAI kernel library for high-performance story generation
+Version: ..
+Libs: -L${libdir} -lkoboldkern -lpthread -lm
+Cflags: -I${includedir}
