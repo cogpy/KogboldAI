@@ -1,0 +1,10 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: kobold-kernel
+Description: KoboldAI kernel library for high-performance story generation
+Version: @KOBOLD_KERNEL_VERSION_MAJOR@.@KOBOLD_KERNEL_VERSION_MINOR@.@KOBOLD_KERNEL_VERSION_PATCH@
+Libs: -L${libdir} -lkoboldkern -lpthread -lm
+Cflags: -I${includedir}

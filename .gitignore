@@ -53,3 +53,13 @@ flask_session
 
 # virtualenvs
 .venv
+
+# Kernel build artifacts
+kernel/build/
+kernel/*.o
+kernel/*.so
+kernel/*.a
+*.cmake
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
