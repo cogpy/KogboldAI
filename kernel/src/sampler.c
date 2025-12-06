@@ -8,6 +8,7 @@
  * Optimization Notes:
  * - Uses partial sorting (heap-based) instead of full qsort for better performance
  * - Memory pooling to reduce allocation overhead
+ * - Reduced nucleus estimation for better performance
  * - Optimized for ~50k vocabulary size typical in modern LLMs
  */
 
@@ -186,16 +187,19 @@ static void softmax_with_temperature(const float *logits, size_t n, float *probs
     
     /* Apply temperature scaling and compute exp */
     float sum = 0.0f;
+    float inv_temp = 1.0f / temperature;
+    
     for (size_t i = 0; i < n; i++) {
-        float scaled = (logits[i] - max_logit) / temperature;
+        float scaled = (logits[i] - max_logit) * inv_temp;
         probs[i] = expf(scaled);
         sum += probs[i];
     }
     
     /* Normalize */
     if (sum > 0.0f) {
+        float inv_sum = 1.0f / sum;
         for (size_t i = 0; i < n; i++) {
-            probs[i] /= sum;
+            probs[i] *= inv_sum;
         }
     }
 }
@@ -284,12 +288,25 @@ int32_t sample_nucleus_tensor(
         sorted[i].prob = probs[i];
     }
     
-    /* Estimate nucleus size (typically small, ~50-500 tokens for top_p=0.9)
-     * Use an aggressive estimate: top 500 tokens for large vocabs
-     * This is usually more than enough since nucleus is typically ~1% of vocab
+    /* Estimate nucleus size based on top_p threshold
+     * For typical LLM distributions with top_p=0.9, nucleus is often 50-200 tokens
+     * For top_p=0.95, it's usually 100-400 tokens
+     * Use a conservative estimate based on top_p value
      */
-    size_t estimated_nucleus = 500;
-    if (n < 5000) estimated_nucleus = n / 10; /* 10% for small vocabs */
+    size_t estimated_nucleus;
+    if (top_p >= 0.95f) {
+        estimated_nucleus = 300; /* More tokens needed for higher top_p */
+    } else if (top_p >= 0.9f) {
+        estimated_nucleus = 150; /* Standard nucleus size */
+    } else {
+        estimated_nucleus = 100; /* Smaller nucleus for lower top_p */
+    }
+    
+    /* Scale for small vocabularies */
+    if (n < 5000) {
+        estimated_nucleus = (size_t)((float)n * 0.08f); /* 8% for small vocabs */
+        if (estimated_nucleus < 50) estimated_nucleus = 50;
+    }
     if (estimated_nucleus > n) estimated_nucleus = n;
     
     /* Partial sort to get top candidates */
@@ -538,9 +555,23 @@ int32_t sample_typical_tensor(
         sorted[i].prob = -distance; /* Negative so partial_sort works (wants descending) */
     }
     
-    /* Estimate typical set size - usually similar to nucleus size */
-    size_t estimated_size = 500; /* Conservative estimate for large vocabs */
-    if (n < 5000) estimated_size = n / 10;
+    /* Estimate typical set size based on typical_p
+     * Similar to nucleus, but typical sampling tends to be more focused
+     */
+    size_t estimated_size;
+    if (typical_p >= 0.95f) {
+        estimated_size = 250; /* More tokens for higher typical_p */
+    } else if (typical_p >= 0.9f) {
+        estimated_size = 120; /* Standard typical size */
+    } else {
+        estimated_size = 80; /* Smaller set for lower typical_p */
+    }
+    
+    /* Scale for small vocabularies */
+    if (n < 5000) {
+        estimated_size = (size_t)((float)n * 0.06f); /* 6% for small vocabs */
+        if (estimated_size < 40) estimated_size = 40;
+    }
     if (estimated_size > n) estimated_size = n;
     
     /* Partial sort by ascending distance (most typical first) */
