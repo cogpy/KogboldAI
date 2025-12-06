@@ -125,8 +125,14 @@ void story_free(void *story) {
         kobold_free(s->authors_note, s->authors_note_len + 1);
     }
     
-    /* Free worldinfo entries array */
+    /* Free worldinfo entries (story owns them) */
     if (s->worldinfo_entries) {
+        /* Forward declaration */
+        extern void worldinfo_entry_free(void *entry);
+        
+        for (size_t i = 0; i < s->worldinfo_count; i++) {
+            worldinfo_entry_free(s->worldinfo_entries[i]);
+        }
         kobold_free(s->worldinfo_entries, sizeof(void*) * s->worldinfo_capacity);
     }
     
@@ -360,4 +366,82 @@ int story_set_authors_note(void *story, const char *note_text) {
     pthread_mutex_unlock(&s->lock);
     
     return 0;
+}
+
+/**
+ * @brief Add world info entry to story
+ * @param story Story state handle
+ * @param entry World info entry to add (story takes ownership)
+ * @return 0 on success, -1 on failure
+ * 
+ * Adds a world info entry to the story's collection. The story takes
+ * ownership of the entry and will free it when the story is destroyed.
+ * 
+ * @performance ≤50µs
+ * @thread-safety Not thread-safe
+ */
+int story_add_worldinfo(void *story, void *entry) {
+    if (!story || !entry) {
+        return -1;
+    }
+    
+    struct story_state *s = (struct story_state*)story;
+    
+    pthread_mutex_lock(&s->lock);
+    
+    /* Expand array if needed */
+    if (s->worldinfo_count >= s->worldinfo_capacity) {
+        size_t new_capacity = s->worldinfo_capacity * 2;
+        void **new_entries = kobold_alloc(sizeof(void*) * new_capacity);
+        if (!new_entries) {
+            pthread_mutex_unlock(&s->lock);
+            return -1;
+        }
+        
+        /* Copy existing entries */
+        memcpy(new_entries, s->worldinfo_entries, 
+               sizeof(void*) * s->worldinfo_count);
+        
+        /* Free old array */
+        kobold_free(s->worldinfo_entries, 
+                   sizeof(void*) * s->worldinfo_capacity);
+        
+        s->worldinfo_entries = new_entries;
+        s->worldinfo_capacity = new_capacity;
+    }
+    
+    /* Add entry */
+    s->worldinfo_entries[s->worldinfo_count] = entry;
+    s->worldinfo_count++;
+    
+    pthread_mutex_unlock(&s->lock);
+    
+    return 0;
+}
+
+/**
+ * @brief Get world info entries from story
+ * @param story Story state handle
+ * @param out_count Output parameter for entry count
+ * @return Array of world info entry handles (do not free)
+ * 
+ * Returns the array of world info entries associated with the story.
+ * The returned pointer is valid until the story is modified or freed.
+ * 
+ * @performance ≤10µs
+ * @thread-safety Thread-safe (read-only)
+ */
+void **story_get_worldinfo_entries(void *story, size_t *out_count) {
+    if (!story || !out_count) {
+        return NULL;
+    }
+    
+    struct story_state *s = (struct story_state*)story;
+    
+    pthread_mutex_lock(&s->lock);
+    *out_count = s->worldinfo_count;
+    void **entries = s->worldinfo_entries;
+    pthread_mutex_unlock(&s->lock);
+    
+    return entries;
 }

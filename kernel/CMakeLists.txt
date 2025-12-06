@@ -62,7 +62,7 @@ set(KOBOLD_KERNEL_SOURCES
     # Sampling functions (Phase 2)
     src/sampler.c
     # World info functions (Phase 3)
-    # src/worldinfo.c
+    src/worldinfo.c
     # Agent orchestration (Phase 3)
     # src/agent_orchestrator.c
     # World building (Phase 3)
