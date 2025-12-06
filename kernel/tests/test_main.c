@@ -15,6 +15,11 @@ extern int test_story_chunk_append(void);
 extern int test_story_set_memory(void);
 extern int test_story_set_authors_note(void);
 extern void run_sampler_tests(void);
+extern int test_worldinfo_entry_create_free(void);
+extern int test_worldinfo_keyword_matching(void);
+extern int test_worldinfo_constant_entry(void);
+extern int test_worldinfo_story_integration(void);
+extern int test_worldinfo_helpers(void);
 
 int main(void) {
     int passed = 0;
@@ -87,6 +92,49 @@ int main(void) {
     /* Sampler tests - these use their own pass/fail tracking */
     run_sampler_tests();
     passed += 4; /* 4 sampler tests */
+    
+    /* World info tests */
+    printf("\nRunning world info tests...\n");
+    if (test_worldinfo_entry_create_free() == 0) {
+        printf("  ✓ test_worldinfo_entry_create_free\n");
+        passed++;
+    } else {
+        printf("  ✗ test_worldinfo_entry_create_free\n");
+        failed++;
+    }
+    
+    if (test_worldinfo_keyword_matching() == 0) {
+        printf("  ✓ test_worldinfo_keyword_matching\n");
+        passed++;
+    } else {
+        printf("  ✗ test_worldinfo_keyword_matching\n");
+        failed++;
+    }
+    
+    if (test_worldinfo_constant_entry() == 0) {
+        printf("  ✓ test_worldinfo_constant_entry\n");
+        passed++;
+    } else {
+        printf("  ✗ test_worldinfo_constant_entry\n");
+        failed++;
+    }
+    
+    if (test_worldinfo_story_integration() == 0) {
+        printf("  ✓ test_worldinfo_story_integration\n");
+        passed++;
+    } else {
+        printf("  ✗ test_worldinfo_story_integration\n");
+        failed++;
+    }
+    
+    if (test_worldinfo_helpers() == 0) {
+        printf("  ✓ test_worldinfo_helpers\n");
+        passed++;
+    } else {
+        printf("  ✗ test_worldinfo_helpers\n");
+        failed++;
+    }
+
     
     /* Summary */
     printf("\n===========================================\n");

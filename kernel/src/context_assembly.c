@@ -213,16 +213,99 @@ struct ggml_tensor *worldinfo_scan_tensor(
         return NULL;
     }
     
-    /* TODO: Implement world info scanning
-     * 1. Iterate through world info entries
-     * 2. Test keywords against context_text
-     * 3. Collect matching entries
-     * 4. Sort by priority
-     * 5. Select entries within budget
-     * 6. Tokenize and create tensor
-     */
+    /* Forward declarations from worldinfo.c */
+    extern bool worldinfo_match_keywords(void *entry, const char *context_text);
+    extern const char *worldinfo_entry_get_content(void *entry);
+    extern size_t worldinfo_entry_get_token_count(void *entry);
+    extern bool worldinfo_entry_is_constant(void *entry);
     
-    return NULL; /* Stub */
+    /* Forward declaration from story_management.c */
+    extern void **story_get_worldinfo_entries(void *story, size_t *out_count);
+    
+    /* Get world info entries from story */
+    size_t entry_count;
+    void **entries = story_get_worldinfo_entries(story, &entry_count);
+    
+    if (!entries || entry_count == 0) {
+        return NULL;
+    }
+    
+    /* Allocate array to track which entries match */
+    bool *matches = (bool *)calloc(entry_count, sizeof(bool));
+    if (!matches) {
+        return NULL;
+    }
+    
+    /* Check each entry for keyword matches or constant flag */
+    size_t match_count = 0;
+    for (size_t i = 0; i < entry_count; i++) {
+        if (worldinfo_entry_is_constant(entries[i]) ||
+            worldinfo_match_keywords(entries[i], context_text)) {
+            matches[i] = true;
+            match_count++;
+        }
+    }
+    
+    if (match_count == 0) {
+        free(matches);
+        return NULL;
+    }
+    
+    /* Allocate token buffer */
+    int32_t *tokens = kobold_alloc(max_tokens * sizeof(int32_t));
+    if (!tokens) {
+        free(matches);
+        return NULL;
+    }
+    
+    /* Collect matched entry content within budget */
+    size_t token_count = 0;
+    for (size_t i = 0; i < entry_count && token_count < max_tokens; i++) {
+        if (!matches[i]) {
+            continue;
+        }
+        
+        const char *content = worldinfo_entry_get_content(entries[i]);
+        if (!content) {
+            continue;
+        }
+        
+        size_t entry_token_count = worldinfo_entry_get_token_count(entries[i]);
+        
+        /* Check if we have room for this entry */
+        if (token_count + entry_token_count > max_tokens) {
+            /* Try to fit partial content if possible */
+            size_t remaining = max_tokens - token_count;
+            if (remaining > 10) {  /* Minimum threshold */
+                entry_token_count = remaining;
+            } else {
+                break;  /* Not enough room */
+            }
+        }
+        
+        /* Tokenize entry content */
+        size_t actual_count = ggml_kernel_tokenize(
+            content,
+            tokens + token_count,
+            entry_token_count
+        );
+        
+        token_count += actual_count;
+    }
+    
+    free(matches);
+    
+    if (token_count == 0) {
+        kobold_free(tokens, max_tokens * sizeof(int32_t));
+        return NULL;
+    }
+    
+    /* Create GGML tensor from tokens */
+    struct ggml_tensor *tensor = ggml_kernel_create_token_tensor(tokens, token_count);
+    
+    kobold_free(tokens, max_tokens * sizeof(int32_t));
+    
+    return tensor;
 }
 
 /**

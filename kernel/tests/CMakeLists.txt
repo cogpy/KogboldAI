@@ -5,6 +5,7 @@ add_executable(test_kernel
     test_story_management.c
     test_memory.c
     test_sampler.c
+    test_worldinfo.c
     test_main.c
 )
 
@@ -22,6 +23,7 @@ if(KOBOLD_KERNEL_BUILD_BENCHMARKS)
     add_executable(benchmark_kernel
         benchmark_story.c
         benchmark_sampler.c
+        benchmark_worldinfo.c
         benchmark_main.c
     )
     

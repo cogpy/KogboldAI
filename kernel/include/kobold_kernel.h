@@ -283,6 +283,18 @@ int story_set_memory(void *story, const char *memory_text);
  */
 int story_set_authors_note(void *story, const char *note_text);
 
+/**
+ * @brief Get world info entries from story
+ * @param story Story state handle
+ * @param out_count Output parameter for entry count
+ * @return Array of world info entry handles (do not free), NULL on failure
+ * 
+ * @note Thread-safe (read-only)
+ * @performance ≤10µs
+ */
+void **story_get_worldinfo_entries(void *story, size_t *out_count);
+
+
 /** @} */
 
 /**
@@ -494,6 +506,47 @@ void worldinfo_entry_free(void *entry);
  * @performance ≤50µs per entry
  */
 bool worldinfo_match_keywords(void *entry, const char *context_text);
+
+/**
+ * @brief Get entry content text
+ * @param entry World info entry handle
+ * @return Content string (do not free), NULL on failure
+ * 
+ * @note Thread-safe (read-only)
+ * @performance ≤10µs
+ */
+const char *worldinfo_entry_get_content(void *entry);
+
+/**
+ * @brief Get entry token count
+ * @param entry World info entry handle
+ * @return Number of tokens in entry content
+ * 
+ * @note Thread-safe
+ * @performance ≤10µs
+ */
+size_t worldinfo_entry_get_token_count(void *entry);
+
+/**
+ * @brief Check if entry is constant (always active)
+ * @param entry World info entry handle
+ * @return True if entry is always active
+ * 
+ * @note Thread-safe
+ * @performance ≤10µs
+ */
+bool worldinfo_entry_is_constant(void *entry);
+
+/**
+ * @brief Check if entry is selective (keyword-triggered)
+ * @param entry World info entry handle
+ * @return True if entry is keyword-triggered
+ * 
+ * @note Thread-safe
+ * @performance ≤10µs
+ */
+bool worldinfo_entry_is_selective(void *entry);
+
 
 /**
  * @brief Add world info entry to story
