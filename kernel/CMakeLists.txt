@@ -60,7 +60,7 @@ set(KOBOLD_KERNEL_SOURCES
     src/context_assembly.c
     src/ggml_integration.c
     # Sampling functions (Phase 2)
-    # src/sampler.c
+    src/sampler.c
     # World info functions (Phase 3)
     # src/worldinfo.c
     # Agent orchestration (Phase 3)
