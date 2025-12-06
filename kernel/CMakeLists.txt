@@ -29,13 +29,13 @@ endif()
 
 # Compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -D_GNU_SOURCE")
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -O0 -fsanitize=address -fsanitize=undefined")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -march=native -DNDEBUG")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -D_GNU_SOURCE")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0 -fsanitize=address -fsanitize=undefined")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -DNDEBUG")
 endif()
@@ -58,8 +58,9 @@ set(KOBOLD_KERNEL_SOURCES
     src/memory.c
     src/story_management.c
     src/context_assembly.c
+    src/ggml_integration.c
     # Sampling functions (Phase 2)
-    # src/sampler.c
+    src/sampler.c
     # World info functions (Phase 3)
     # src/worldinfo.c
     # Agent orchestration (Phase 3)
@@ -68,20 +69,26 @@ set(KOBOLD_KERNEL_SOURCES
     # src/world_builder.c
 )
 
+# GGML source files from KoboldCpp
+set(GGML_SOURCES
+    ${GGML_SOURCE_DIR}/ggml.c
+    ${GGML_SOURCE_DIR}/ggml-alloc.c
+    ${GGML_SOURCE_DIR}/ggml-backend.c
+    ${GGML_SOURCE_DIR}/ggml-quants.c
+)
+
 # Main kernel library (shared)
-add_library(koboldkern SHARED ${KOBOLD_KERNEL_SOURCES})
+add_library(koboldkern SHARED ${KOBOLD_KERNEL_SOURCES} ${GGML_SOURCES})
 target_include_directories(koboldkern PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
-# Link with GGML from KoboldCpp
-# Note: We'll link against the existing GGML object files or library
-# For now, we include the GGML headers and expect GGML to be available at runtime
+# Link with GGML dependencies
 target_link_libraries(koboldkern PRIVATE m pthread)
 
 # Static library variant
-add_library(koboldkern_static STATIC ${KOBOLD_KERNEL_SOURCES})
+add_library(koboldkern_static STATIC ${KOBOLD_KERNEL_SOURCES} ${GGML_SOURCES})
 target_include_directories(koboldkern_static PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>

@@ -11,6 +11,10 @@
 #include <string.h>
 #include <pthread.h>
 
+/* Forward declarations for GGML integration */
+extern int ggml_kernel_init(size_t mem_size);
+extern void ggml_kernel_shutdown(void);
+
 /* Memory pool state */
 static struct {
     bool initialized;
@@ -54,6 +58,14 @@ int kobold_memory_init(size_t pool_size_mb) {
     g_memory.num_allocations = 0;
     g_memory.initialized = true;
     
+    /* Initialize GGML context with half the memory pool */
+    size_t ggml_mem_size = g_memory.pool_size / 2;
+    if (ggml_kernel_init(ggml_mem_size) != 0) {
+        pthread_mutex_destroy(&g_memory.lock);
+        g_memory.initialized = false;
+        return -1;
+    }
+    
     return 0;
 }
 
@@ -70,6 +82,9 @@ void kobold_memory_shutdown(void) {
     if (!g_memory.initialized) {
         return;
     }
+    
+    /* Shutdown GGML context */
+    ggml_kernel_shutdown();
     
     pthread_mutex_destroy(&g_memory.lock);
     

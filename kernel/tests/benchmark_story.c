@@ -65,20 +65,21 @@ void benchmark_context_assembly(void) {
     
     double start = get_time_us();
     
-    for (int i = 0; i < NUM_ITERATIONS; i++) {
-        /* Context assembly is currently stubbed, so this measures overhead only */
-        struct ggml_tensor *ctx = ctx_assemble_tensor(story, &settings, 2048);
-        (void)ctx; /* Suppress unused warning */
-    }
+    /* Only run once since tensors are accumulated in context */
+    struct ggml_tensor *ctx = ctx_assemble_tensor(story, &settings, 2048);
     
     double end = get_time_us();
-    double avg_us = (end - start) / NUM_ITERATIONS;
+    double avg_us = (end - start);
     
     printf("Context Assembly:\n");
-    printf("  Average time: %.2f µs\n", avg_us);
+    printf("  Time: %.2f µs\n", avg_us);
     printf("  Target: ≤1000 µs (1 ms)\n");
     printf("  Status: %s\n", avg_us <= 1000.0 ? "✓ PASS" : "✗ NEEDS OPTIMIZATION");
-    printf("  Note: Currently stubbed - measures overhead only\n\n");
+    if (ctx) {
+        printf("  Note: Tensor assembled successfully\n\n");
+    } else {
+        printf("  Note: Tensor assembly returned NULL (no chunks with tokens)\n\n");
+    }
     
     story_free(story);
     kobold_memory_shutdown();

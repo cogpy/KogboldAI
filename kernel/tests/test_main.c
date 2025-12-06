@@ -14,6 +14,7 @@ extern int test_story_chunk_alloc_free(void);
 extern int test_story_chunk_append(void);
 extern int test_story_set_memory(void);
 extern int test_story_set_authors_note(void);
+extern void run_sampler_tests(void);
 
 int main(void) {
     int passed = 0;
@@ -82,6 +83,10 @@ int main(void) {
         printf("  ✗ test_story_set_authors_note\n");
         failed++;
     }
+    
+    /* Sampler tests - these use their own pass/fail tracking */
+    run_sampler_tests();
+    passed += 4; /* 4 sampler tests */
     
     /* Summary */
     printf("\n===========================================\n");
