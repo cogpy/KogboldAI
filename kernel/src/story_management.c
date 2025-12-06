@@ -125,8 +125,14 @@ void story_free(void *story) {
         kobold_free(s->authors_note, s->authors_note_len + 1);
     }
     
-    /* Free worldinfo entries array */
+    /* Free worldinfo entries (story owns them) */
     if (s->worldinfo_entries) {
+        /* Forward declaration */
+        extern void worldinfo_entry_free(void *entry);
+        
+        for (size_t i = 0; i < s->worldinfo_count; i++) {
+            worldinfo_entry_free(s->worldinfo_entries[i]);
+        }
         kobold_free(s->worldinfo_entries, sizeof(void*) * s->worldinfo_capacity);
     }
     

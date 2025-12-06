@@ -216,15 +216,6 @@ struct ggml_tensor *worldinfo_scan_tensor(
         return NULL;
     }
     
-    /* Forward declarations from worldinfo.c */
-    extern bool worldinfo_match_keywords(void *entry, const char *context_text);
-    extern const char *worldinfo_entry_get_content(void *entry);
-    extern size_t worldinfo_entry_get_token_count(void *entry);
-    extern bool worldinfo_entry_is_constant(void *entry);
-    
-    /* Forward declaration from story_management.c */
-    extern void **story_get_worldinfo_entries(void *story, size_t *out_count);
-    
     /* Get world info entries from story */
     size_t entry_count;
     void **entries = story_get_worldinfo_entries(story, &entry_count);
