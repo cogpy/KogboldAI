@@ -1,1 +1,0 @@
-/usr/bin/cc  -Wall -Wextra -Wpedantic -O3 -DNDEBUG -O3 -march=native -DNDEBUG -Wl,--dependency-file=CMakeFiles/test_kernel.dir/link.d CMakeFiles/test_kernel.dir/test_story_management.c.o CMakeFiles/test_kernel.dir/test_memory.c.o CMakeFiles/test_kernel.dir/test_main.c.o -o test_kernel  ../libkoboldkern_static.a -lm -lpthread

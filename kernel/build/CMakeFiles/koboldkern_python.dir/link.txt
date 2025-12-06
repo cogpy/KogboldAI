@@ -1,1 +1,0 @@
-/usr/bin/cc -fPIC  -Wall -Wextra -Wpedantic -O3 -DNDEBUG -O3 -march=native -DNDEBUG -Wl,--dependency-file=CMakeFiles/koboldkern_python.dir/link.d -shared -Wl,-soname,libkoboldkern_python.so -o libkoboldkern_python.so CMakeFiles/koboldkern_python.dir/src/python_ffi.c.o  -Wl,-rpath,/home/runner/work/KogboldAI/KogboldAI/kernel/build: libkoboldkern.so

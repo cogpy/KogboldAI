@@ -1,2 +1,0 @@
-/usr/bin/ar qc libkoboldkern_static.a CMakeFiles/koboldkern_static.dir/src/version.c.o CMakeFiles/koboldkern_static.dir/src/memory.c.o CMakeFiles/koboldkern_static.dir/src/story_management.c.o CMakeFiles/koboldkern_static.dir/src/context_assembly.c.o
-/usr/bin/ranlib libkoboldkern_static.a
