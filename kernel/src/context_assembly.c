@@ -12,6 +12,9 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Configuration constants */
+#define WORLDINFO_MIN_TOKEN_THRESHOLD 10  /**< Minimum tokens for partial entry */
+
 /* Forward declarations */
 extern void *kobold_alloc(size_t size);
 extern void kobold_free(void *ptr, size_t size);
@@ -276,7 +279,7 @@ struct ggml_tensor *worldinfo_scan_tensor(
         if (token_count + entry_token_count > max_tokens) {
             /* Try to fit partial content if possible */
             size_t remaining = max_tokens - token_count;
-            if (remaining > 10) {  /* Minimum threshold */
+            if (remaining > WORLDINFO_MIN_TOKEN_THRESHOLD) {
                 entry_token_count = remaining;
             } else {
                 break;  /* Not enough room */

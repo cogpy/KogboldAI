@@ -19,6 +19,9 @@
 #include <ctype.h>
 #include <pthread.h>
 
+/* Configuration constants */
+#define WORLDINFO_TOKEN_ESTIMATE_RATIO 4  /**< Estimated characters per token */
+
 /**
  * @brief World info entry internal structure
  */
@@ -41,6 +44,12 @@ struct worldinfo_entry {
  */
 static char **parse_keywords(const char *keys, size_t *out_count) {
     if (!keys || !out_count) {
+        return NULL;
+    }
+    
+    // Handle empty string
+    if (!*keys) {
+        *out_count = 0;
         return NULL;
     }
     
@@ -319,9 +328,8 @@ size_t worldinfo_entry_get_token_count(void *entry) {
     struct worldinfo_entry *wi = (struct worldinfo_entry *)entry;
     
     // If not tokenized yet, estimate based on content length
-    // Rough estimate: 1 token per 4 characters
     if (wi->token_count == 0 && wi->content) {
-        return strlen(wi->content) / 4;
+        return strlen(wi->content) / WORLDINFO_TOKEN_ESTIMATE_RATIO;
     }
     
     return wi->token_count;

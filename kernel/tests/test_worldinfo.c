@@ -8,6 +8,9 @@
 #include <string.h>
 #include <assert.h>
 
+/* Test configuration */
+#define TEST_MEMORY_SIZE_MB 64  /**< Memory pool size for tests */
+
 /**
  * @brief Test world info entry creation and destruction
  */
@@ -151,7 +154,7 @@ int test_worldinfo_constant_entry(void) {
  */
 int test_worldinfo_story_integration(void) {
     /* Initialize memory system */
-    if (kobold_memory_init(64) != 0) {
+    if (kobold_memory_init(TEST_MEMORY_SIZE_MB) != 0) {
         fprintf(stderr, "Failed to initialize memory\n");
         return -1;
     }
